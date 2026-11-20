@@ -194,22 +194,39 @@ var CALC = (function () {
   function arrondi5(v) { return Math.round(v / 5) * 5; }
 
   // ---------------------------------------------------------------- DQE
+  // ---------------------------------------------------------------- PETITS TRAVAUX (devis rapide, sans métré)
+  function lotNom(code) { var L = D.LOTS.filter(function (x) { return x[0] === code; })[0]; return L ? L[1] : "Divers"; }
+  function metreRapide(p, cat) {
+    var lignes = [];
+    (p.rapide || []).forEach(function (r) {
+      var q = n(r.q); if (q <= 0) return;
+      var libre = !r.code || !cat.ouv[r.code];
+      var lot = libre ? (r.lot || "L12") : cat.ouv[r.code].lot;
+      lignes.push({ id: r.id, code: libre ? "" : r.code, q: q, phase: lotNom(lot), detail: r.loc || "", prefix: "", libre: libre, d: r.d || "Prestation", u: r.u || "FF", lot: lot, pu: n(r.pu), puForce: libre ? 0 : n(r.pu), dPerso: libre ? "" : (r.d || "") });
+    });
+    var ordre = D.LOTS.map(function (x) { return x[0]; });
+    lignes.sort(function (a, b) { return ordre.indexOf(a.lot) - ordre.indexOf(b.lot); });
+    return { lignes: lignes, surface: n(p.surfaceRapide) };
+  }
+
   function dqe(p, st) {
     var cat = catalogue(st, (p.info || {}).region);
-    var k = K(st.ent), m = metre(p), ov = p.overrides || {};
+    var k = K(st.ent), m = p.mode === "rapide" ? metreRapide(p, cat) : metre(p), ov = p.overrides || {};
     var lignes = m.lignes.map(function (l) {
-      var o = cat.ouv[l.code] || { d: "?", u: "", lot: "L12" };
-      var sd = sousDetail(cat, l.code);
-      var pu = arrondi5(sd.ds * k);
+      var o = l.libre ? { d: l.d, u: l.u, lot: l.lot } : (cat.ouv[l.code] || { d: "?", u: "", lot: "L12" });
+      var sd = l.libre ? { ds: n(l.pu) / k } : sousDetail(cat, l.code);
+      var pu = l.libre ? n(l.pu) : arrondi5(sd.ds * k);
       var q = l.q, oq = ov[l.id] || {};
       if (oq.q !== undefined && oq.q !== "" && oq.q !== null) q = n(oq.q);
       if (oq.pu !== undefined && oq.pu !== "" && oq.pu !== null) pu = n(oq.pu);
-      return { id: l.id, code: l.code, lot: o.lot, d: l.prefix + o.d, u: o.u, qCalc: l.q, q: q, pu: pu, puCalc: arrondi5(sd.ds * k), ds: sd.ds, m: q * pu, phase: l.phase, detail: l.detail, forceQ: q !== l.q, forceP: pu !== arrondi5(sd.ds * k) };
+      var puCalc = l.libre ? n(l.pu) : arrondi5(sd.ds * k);
+      if (!l.libre && l.puForce > 0 && !(oq.pu !== undefined && oq.pu !== "" && oq.pu !== null)) pu = n(l.puForce);
+      return { id: l.id, code: l.libre ? "" : l.code, lot: o.lot, d: (l.prefix || "") + (l.dPerso || o.d), u: o.u, qCalc: l.q, q: q, pu: pu, puCalc: puCalc, ds: sd.ds, m: q * pu, phase: l.phase, detail: l.detail, forceQ: q !== l.q, forceP: pu !== puCalc, libre: !!l.libre };
     });
     // Installation de chantier (% des travaux)
     var travaux = lignes.reduce(function (s, l) { return s + l.m; }, 0);
     var pct = n((p.opt || {}).installPct);
-    if (pct > 0) {
+    if (pct > 0 && p.mode !== "rapide") {
       var puI = arrondi5(travaux * pct / 100), oi = ov["F-inst"] || {};
       if (oi.pu !== undefined && oi.pu !== "" && oi.pu !== null) puI = n(oi.pu);
       lignes.unshift({ id: "F-inst", code: "1.1", lot: "L1", d: "Installation et repli de chantier (" + pct + " % des travaux)", u: "FF", qCalc: 1, q: 1, pu: puI, puCalc: arrondi5(travaux * pct / 100), ds: puI / k, m: puI, phase: "Terrassements et fondations", detail: pct + " % du montant des travaux", forceQ: false, forceP: false });
@@ -231,7 +248,7 @@ var CALC = (function () {
       if (!ph) { ph = { nom: l.phase, total: 0 }; phases.push(ph); }
       ph.total += l.m;
     });
-    var ordre = ["Terrassements et fondations"].concat((p.niveaux || []).map(function (v) { return "Gros œuvre " + v.nom; }), ["Toiture-terrasse", "Second œuvre et finitions", "VRD et divers"]);
+    var ordre = p.mode === "rapide" ? D.LOTS.map(function (x) { return x[1]; }) : ["Terrassements et fondations"].concat((p.niveaux || []).map(function (v) { return "Gros œuvre " + v.nom; }), ["Toiture-terrasse", "Second œuvre et finitions", "VRD et divers"]);
     phases.sort(function (a, b) { return ordre.indexOf(a.nom) - ordre.indexOf(b.nom); });
     return { lots: lots, lignes: lignes, ht: ht, tva: tva, ttc: ht + tva, ds: ds, k: k, surface: m.surface, phases: phases, cat: cat };
   }
@@ -294,6 +311,6 @@ var CALC = (function () {
     return s.charAt(0).toUpperCase() + s.slice(1);
   }
 
-  return { metre: metre, catalogue: catalogue, sousDetail: sousDetail, dqe: dqe, besoins: besoins, unitesAchat: unitesAchat, enLettres: enLettres, K: K, n: n, r2: r2 };
+  return { metre: metre, metreRapide: metreRapide, lotNom: lotNom, catalogue: catalogue, sousDetail: sousDetail, dqe: dqe, besoins: besoins, unitesAchat: unitesAchat, enLettres: enLettres, K: K, n: n, r2: r2 };
 })();
 if (typeof module !== "undefined") module.exports = CALC;

@@ -8,6 +8,7 @@
    ============================================================ */
 var PLAN = (function () {
   var C = (typeof CALC !== "undefined") ? CALC : require("./calc.js");
+  var DATA = (typeof window !== "undefined" && window.DATA) || (typeof global !== "undefined" && global.DATA) || require("./data.js");
   var n = C.n;
   var JOUR = 86400000;
 
@@ -45,6 +46,7 @@ var PLAN = (function () {
 
   /* ---------------- Gabarit des tâches ---------------- */
   function gabarit(p) {
+    if (p.mode === "rapide") return gabaritRapide(p);
     var N = p.niveaux || [], L = N.length, T = [];
     function t(id, nom, phase, lignes, deps, o) { T.push(Object.assign({ id: id, nom: nom, phase: phase, lignes: lignes, deps: deps }, o || {})); }
     var PF = "Terrassements et fondations";
@@ -75,6 +77,24 @@ var PLAN = (function () {
       t("PEIN", "Peintures et vernis", PS, [["S-pi", 1], ["S-pp", 1], ["S-pe", 1], ["S-pg", 1], ["S-ve", 1]], [["CARR", 0], ["MENB", 0], ["MENA", 0], ["ENDI", 21]]);
       t("RECEP", "Nettoyage, essais et réception", "Réception", [], [["PEIN", 0], ["APPA", 0], ["ETAN", 0], ["VRD", 0]], { fixe: 3 });
     }
+    return T;
+  }
+  // Petits travaux : une tâche par lot, enchaînées dans l'ordre des lots, puis réception
+  function gabaritRapide(p) {
+    var T = [], lots = {}, prev = null, EXT = { L1: 1, L2: 1, L3: 1, L4: 1, L12: 1 };
+    (p.rapide || []).forEach(function (r) {
+      if (!(+r.q > 0)) return;
+      var o = r.code && DATA.OUV[r.code], lot = (o && !r.lot ? o.lot : r.lot) || "L12";
+      lots[lot] = lots[lot] || { lignes: [], jours: 0 };
+      lots[lot].lignes.push([r.id, 1]); lots[lot].jours += +r.jours || 0;
+    });
+    DATA.LOTS.forEach(function (L) {
+      var x = lots[L[0]]; if (!x) return;
+      var id = "R" + L[0];
+      T.push({ id: id, nom: L[1], phase: L[1], lignes: x.lignes, deps: prev ? [[prev, 0]] : [], ext: EXT[L[0]] || 0, fixe: x.jours || 0 });
+      prev = id;
+    });
+    T.push({ id: "RECEP", nom: "Nettoyage et réception", phase: "Réception", lignes: [], deps: prev ? [[prev, 0]] : [], fixe: 1 });
     return T;
   }
   function correspond(id, motif) { return id === motif || (motif.slice(-1) !== "-" && id.indexOf(motif) === 0 && /^S-m-/.test(motif)); }

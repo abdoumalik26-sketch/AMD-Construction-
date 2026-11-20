@@ -2,7 +2,7 @@
    PILOTE BTP — interface
    ============================================================ */
 var APP = (function () {
-  var D = DATA, C = CALC, KEY = "piloteBTP_v1", VERSION = "2026.11.20-b";
+  var D = DATA, C = CALC, KEY = "piloteBTP_v1", VERSION = "2026.11.20-c";
   var S, ui = { page: "dash", sub: { metres: "fond", prix: "dqe" }, niv: 0, ouv: null, phase: "Toutes", ouvEdit: "3.4" };
   var $ = function (id) { return document.getElementById(id); };
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
@@ -39,6 +39,9 @@ var APP = (function () {
       p.suivi = p.suivi || {}; p.suivi.rapports = p.suivi.rapports || [];
       p.factu = p.factu || {}; p.factu.docs = p.factu.docs || []; p.factu.achats = p.factu.achats || [];
       p.memoire = p.memoire || {}; p.memoire.sections = p.memoire.sections || {};
+      p.mode = p.mode || "complet"; p.rapide = p.rapide || [];
+      p.marche = Object.assign({ type: "prive", autorite: "etat", nomAutorite: "", ref: "", montantEstime: 0, dateDepot: "", heureDepot: "", validite: 90, tauxBE: 0, autres: "" }, p.marche || {}); p.marche.check = p.marche.check || {};
+      p.reception = Object.assign({ num: "", date: new Date().toISOString().slice(0, 10), lieu: "", decision: "sans", delai: 30, ref: "", mo: "", moe: "", ent: "", obs: "" }, p.reception || {});
     });
     return s;
   }
@@ -104,12 +107,13 @@ var APP = (function () {
     if (ui.page === "params") updateK();
     if (ui.page === "prix" && ui.sub.prix === "devis") renderPage();
     if (ui.page === "planning" || (ui.page === "factu" && path.indexOf("factu.achats") === 0)) renderPage();
-    if (path === "statut") renderPage();
+    if (path === "statut" || path === "mode" || path.indexOf("marche.") === 0 || path.indexOf("reception.decision") === 0) renderPage();
+    if (path.indexOf("rapide.") === 0 || path === "surfaceRapide") renderPage();
   }
 
   /* ---------------- Coquille ---------------- */
   var MENU = [
-    ["dash", "Tableau de bord", "▦"], ["projets", "Projets", "▤"], ["metres", "Métrés", "⊞"], ["prix", "Études de prix", "₣"],
+    ["dash", "Tableau de bord", "▦"], ["projets", "Projets", "▤"], ["metres", "Métrés / devis rapide", "⊞"], ["prix", "Études de prix", "₣"],
     ["planning", "Planning", "▭"], ["opc", "OPC et anticipation", "◎"], ["terrain", "Suivi terrain", "⚑"],
     ["appro", "Approvisionnements", "⛟"], ["factu", "Facturation et trésorerie", "≡"], ["memoires", "Mémoires techniques", "✎"], ["params", "Paramètres", "⚙"]
   ];
@@ -170,8 +174,12 @@ var APP = (function () {
   /* ---- Projets ---- */
   PAGES.projets = function () {
     var p = P();
-    var h = '<div class="head"><h1>Projets</h1><p>Chaque projet regroupe son métré, son étude de prix, ses documents et, plus tard, son planning et son suivi.</p></div>';
-    h += '<div class="bar-btn"><button class="btn p" id="newP">+ Nouveau projet</button><button class="btn" id="dupP">Dupliquer le projet actif</button><button class="btn" id="exP">+ Projet exemple (villa R+1)</button><button class="btn danger" id="delP">Supprimer le projet actif</button></div>';
+    var h = '<div class="head"><h1>Projets</h1><p>Chaque projet regroupe son métré ou son devis rapide, son étude de prix, son planning, son suivi et ses documents.</p></div>';
+    ui.sub.projets = ui.sub.projets || "fiche";
+    h += '<div class="bar-btn"><button class="btn p" id="newP">+ Nouveau chantier (métré complet)</button><button class="btn p" id="newR">+ Petits travaux (devis rapide)</button><button class="btn" id="dupP">Dupliquer le projet actif</button><button class="btn" id="exP">+ Projet exemple (villa R+1)</button><button class="btn danger" id="delP">Supprimer le projet actif</button></div>';
+    h += tabs("projets", [["fiche", "Fiche du projet"], ["marche", "Marché public" + (P().marche.type === "public" ? "" : " (non concerné)")], ["liste", "Tous les projets"]]);
+    if (ui.sub.projets === "marche") return h + (window.TYP ? TYP.marcheHTML() : "");
+    if (ui.sub.projets === "liste") return h + listeProjets();
     h += '<div class="card"><h2>Fiche du projet actif</h2><div class="form">' +
       fld("Nom du projet", "info.nom", { text: true }) + fld("Type d'ouvrage", "info.type", { text: true, ph: "Villa R+1, immeuble R+3…" }) +
       fld("Maître d'ouvrage (client)", "info.client", { text: true }) + fld("Téléphone du client", "info.tel", { text: true }) +
@@ -179,12 +187,20 @@ var APP = (function () {
       fld("Région (prix des matériaux)", "info.region", { options: Object.keys(D.REGIONS).map(function (r) { return [r, r + " (×" + D.REGIONS[r][0].toFixed(2) + (D.REGIONS[r][1] === "estimé" ? ", estimé" : ", ANSD") + ")"]; }) }, "Coefficient appliqué aux prix des matériaux de la bibliothèque (base Dakar). Source ANSD pour Dakar, Diourbel, Kaolack, Kolda et Saint-Louis ; estimation pour les autres régions.") +
       fld("Date de l'étude", "info.date", { date: true }) + fld("Date de livraison promise", "info.dateLivraison", { date: true }) +
       fld("Statut", "statut", { options: [["etude", "En étude / devis"], ["chantier", "Chantier en cours"], ["termine", "Terminé"]] }, "Seuls les chantiers en cours sont suivis par le moteur d'anticipation (OPC).") +
+      fld("Méthode de chiffrage", "mode", { options: [["complet", "Métré complet à partir du plan"], ["rapide", "Petits travaux : devis rapide sans métré"]] }) +
+      fld("Type de client", "marche.type", { options: [["prive", "Privé (particulier, entreprise, diaspora)"], ["public", "Marché public (État, commune, établissement)"]] }, "Pour un marché public, l'onglet « Marché public » donne la procédure indicative, les cautions et la liste des pièces du dossier.") +
       '</div><label class="f wide"><span>Description</span>' + inp("info.description", { area: true, rows: 3 }) + "</label></div>";
-    h += '<div class="card"><h2>Tous les projets</h2><table class="t"><tr><th class="l">Projet</th><th class="l">Client</th><th class="l">Ville</th><th>Créé le</th><th></th></tr>' +
-      S.projects.map(function (x) { return "<tr><td class='l'>" + esc(x.info.nom) + "</td><td class='l'>" + esc(x.info.client) + "</td><td class='l'>" + esc(x.info.ville) + "</td><td>" + new Date(x.created).toLocaleDateString("fr-FR") + "</td><td>" + (x.id === S.active ? "<span class='tag'>actif</span>" : "<button class='btn sm' data-act='" + x.id + "'>Ouvrir</button>") + "</td></tr>"; }).join("") + "</table></div>";
     return h;
   };
+  function listeProjets() {
+    var h = '<div class="card"><h2>Tous les projets</h2><table class="t"><tr><th class="l">Projet</th><th class="l">Type</th><th class="l">Client</th><th class="l">Ville</th><th>Créé le</th><th></th></tr>' +
+      S.projects.map(function (x) { return "<tr><td class='l'>" + esc(x.info.nom) + "</td><td class='l'>" + (x.mode === "rapide" ? "Petits travaux" : "Chantier") + (x.marche && x.marche.type === "public" ? " · public" : "") + "</td><td class='l'>" + esc(x.info.client) + "</td><td class='l'>" + esc(x.info.ville) + "</td><td>" + new Date(x.created).toLocaleDateString("fr-FR") + "</td><td>" + (x.id === S.active ? "<span class='tag'>actif</span>" : "<button class='btn sm' data-act='" + x.id + "'>Ouvrir</button>") + "</td></tr>"; }).join("") + "</table></div>";
+    return h;
+  }
   POST.projets = function () {
+    bindTabs("projets");
+    if (ui.sub.projets === "marche" && window.TYP) TYP.postMarche();
+    $("newR").onclick = function () { var p = D.projetVide(); p.mode = "rapide"; p.info.nom = "Petits travaux"; S.projects.push(p); S = migrate(S); S.active = p.id; S.demo = false; save(); renderTop(); go("metres"); toast("Projet petits travaux créé : ajoutez vos lignes"); };
     $("newP").onclick = function () { var p = D.projetVide(); S.projects.push(p); S.active = p.id; S.demo = false; save(); renderTop(); renderPage(); toast("Nouveau projet créé"); };
     $("exP").onclick = function () { var p = D.exemple(); S.projects.push(p); S.active = p.id; save(); renderTop(); renderPage(); toast("Projet exemple ajouté"); };
     $("dupP").onclick = function () { var p = clone(P()); p.id = "p" + Date.now(); p.info.nom += " (copie)"; p.created = new Date().toISOString(); S.projects.push(p); S.active = p.id; save(); renderTop(); renderPage(); toast("Projet dupliqué"); };
@@ -201,12 +217,13 @@ var APP = (function () {
   /* ---- Métrés ---- */
   var TYPES_MUR = [["3.1", "Agglos creux de 20"], ["3.2", "Agglos creux de 15"], ["3.3", "Agglos creux de 10"]];
   PAGES.metres = function () {
+    if (P().mode === "rapide" && window.TYP) return TYP.pageRapide();
     var h = '<div class="head"><h1>Métrés</h1><p>Saisissez les données lues sur le plan : l\'application calcule les quantités nettes de tous les corps d\'état. Les pertes sont comptées dans les sous-détails de prix, pas dans les quantités.</p></div>';
     h += tabs("metres", [["fond", "1 · Fondations"], ["niv", "2 · Niveaux"], ["fin", "3 · Toiture et options"], ["res", "4 · Résultat du métré"]]);
     h += '<div class="split"><div class="main">' + ({ fond: metFond, niv: metNiv, fin: metFin, res: metRes }[ui.sub.metres] || metFond)() + '</div><aside class="side card" id="side"></aside></div>';
     return h;
   };
-  POST.metres = function () { bindTabs("metres"); updateSide(); bindRows(); };
+  POST.metres = function () { if (P().mode === "rapide" && window.TYP) return TYP.postRapide(); bindTabs("metres"); updateSide(); bindRows(); };
   function rowsTable(path, cols, add) {
     var arr = get(P(), path) || [];
     var h = '<table class="t edit"><tr>' + cols.map(function (c) { return '<th class="' + (c.l ? "l" : "") + '">' + c.t + "</th>"; }).join("") + "<th></th></tr>";
@@ -402,6 +419,7 @@ var APP = (function () {
   }
   function echeancier(q) {
     var ac = C.n(S.ent.acompte) / 100, rows = [["Acompte à la signature", ac * q.ttc]], reste = q.ttc * (1 - ac);
+    if (P().mode === "rapide") { rows.push(["Solde à la réception des travaux", reste]); return rows; }
     q.phases.forEach(function (ph) { rows.push(["Fin de phase : " + ph.nom, reste * ph.total / q.ht]); });
     return rows;
   }
@@ -637,7 +655,7 @@ var APP = (function () {
 
     function dqe() {
       var q = Q(), doc = doc0(), titre = "DEVIS QUANTITATIF ET ESTIMATIF", sous = "Date : " + new Date(P().info.date || Date.now()).toLocaleDateString("fr-FR");
-      header(doc, titre, sous); var y = blocProjet(doc, 35, "Surface de plancher : " + fmt(q.surface) + " m²");
+      header(doc, titre, sous); var y = blocProjet(doc, 35, q.surface ? "Surface de plancher : " + fmt(q.surface) + " m²" : "");
       y = table(doc, { startY: y, head: [["N°", "Désignation", "U", "Quantité", "P.U. HT", "Montant HT"]], body: lignesDetail(q), columnStyles: colsDet }, titre, sous);
       totaux(doc, y, q, titre, sous); footers(doc, "DQE"); saveFile(doc.output("blob"), "DQE_" + slug(P().info.nom) + ".pdf");
     }
@@ -677,7 +695,7 @@ var APP = (function () {
         doc.setFont("helvetica", "bold"); doc.setFontSize(9.5); doc.text("Échéancier de paiement", 14, y + 2);
         y = table(doc, { startY: y + 4, head: [["Échéance", "%", "Montant TTC"]], body: echeancier(q).map(function (r) { return [t(r[0]), f(100 * r[1] / q.ttc, 1) + " %", f(r[1])]; }), columnStyles: { 0: { cellWidth: 120 }, 1: { cellWidth: 22, halign: "right" }, 2: { cellWidth: 40, halign: "right" } } }, titre, sous) + 6;
       }
-      var cond = doc.splitTextToSize(t("Conditions : " + (dv.conditions || S.ent.conditions)), 182);
+      var cond = doc.splitTextToSize(t("Conditions : " + (dv.conditions || (p.mode === "rapide" ? "Prix fermes pendant la durée de validité du devis. Paiement : acompte à la commande, solde à la réception des travaux. Les travaux non prévus au présent devis feront l'objet d'un devis complémentaire." : S.ent.conditions))), 182);
       if (y + cond.length * 4 + 40 > 280) { doc.addPage(); header(doc, titre, sous); y = 38; }
       doc.setFont("helvetica", "normal"); doc.setFontSize(8.5); doc.text(cond, 14, y); y += cond.length * 4 + 8;
       doc.setFont("helvetica", "bold"); doc.text(t("Pour " + S.ent.nom), 16, y); doc.text("Bon pour accord, le client", 113, y);

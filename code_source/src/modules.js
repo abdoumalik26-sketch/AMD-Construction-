@@ -191,9 +191,9 @@ var MOD = (function () {
   function pageOPC() {
     var h = '<div class="head"><h1>OPC et anticipation</h1><p>Ordonnancement, pilotage et coordination : engagements, alertes, avancement, planning glissant, comptes rendus et réserves.</p></div>';
     h += '<div class="bar-btn"><label>Date d\'analyse : <input type="date" id="jourA" value="' + jour() + '"></label><span class="hint">Par défaut aujourd\'hui. Changez-la pour simuler une autre date.</span></div>';
-    h += (X.ui.sub.opc = X.ui.sub.opc || "eng", "") + X.tabs("opc", [["eng", "Engagements et alertes"], ["av", "Avancement"], ["glis", "Planning glissant (3 semaines)"], ["cr", "Comptes rendus"], ["res", "Réserves"]]);
+    h += (X.ui.sub.opc = X.ui.sub.opc || "eng", "") + X.tabs("opc", [["eng", "Engagements et alertes"], ["av", "Avancement"], ["glis", "Planning glissant (3 semaines)"], ["cr", "Comptes rendus"], ["res", "Réserves"], ["rec", "Réception (PV)"]]);
     var sub = X.ui.sub.opc || "eng";
-    return h + ({ eng: function () { return engagementsHTML(false); }, av: opcAv, glis: opcGlis, cr: opcCR, res: opcRes }[sub] || function () { return engagementsHTML(false); })();
+    return h + ({ eng: function () { return engagementsHTML(false); }, av: opcAv, glis: opcGlis, cr: opcCR, res: opcRes, rec: function () { return window.TYP ? TYP.receptionHTML() : ""; } }[sub] || function () { return engagementsHTML(false); })();
   }
   function postOPC() {
     if (!X.ui.sub.opc) X.ui.sub.opc = "eng";
@@ -202,7 +202,7 @@ var MOD = (function () {
     document.querySelectorAll("[data-openp]").forEach(function (r) { r.onclick = function () { S().active = r.dataset.openp; X.save(); X.renderTop(); X.ui.sub.opc = "av"; X.renderPage(); }; });
     X.linkGo();
     var sub = X.ui.sub.opc;
-    if (sub === "av") postAv(); if (sub === "glis") postGlis(); if (sub === "cr") postCR(); if (sub === "res") postRes();
+    if (sub === "av") postAv(); if (sub === "glis") postGlis(); if (sub === "cr") postCR(); if (sub === "res") postRes(); if (sub === "rec" && window.TYP) TYP.postReception();
     chargerVignettes();
   }
   function courbeS(r) {
