@@ -225,14 +225,16 @@ var PIL = (function () {
      4. APPRENTISSAGE
      ===================================================== */
   var K_PRIOR = 2;   // poids de la valeur de référence (équivaut à 2 chantiers)
+  function wmoy(obs, prior, kp) { var sw = kp, sv = kp * prior; obs.forEach(function (o) { sw += o.w; sv += o.w * o.v; }); return sv / sw; }
   function suggestions() {
-    var s = S(), out = [], rexs = s.projects.filter(function (p) { return p.rex; });
+    var s = S(), out = [], rexs = s.projects.filter(function (p) { return p.rex; }), EXT = window.OUT ? OUT.observations() : { prod: {}, prix: {} };
     // Productivité par métier
     Object.keys(LIBM).forEach(function (k) {
-      var obs = []; rexs.forEach(function (p) { p.rex.mo.forEach(function (m) { if (m.code === k) obs.push(Math.min(1.8, Math.max(0.6, m.ratioBase))); }); });
+      var obs = []; rexs.forEach(function (p) { p.rex.mo.forEach(function (m) { if (m.code === k) obs.push({ v: Math.min(1.8, Math.max(0.6, m.ratioBase)), w: 1 }); }); });
+      (EXT.prod[k] || []).forEach(function (o) { obs.push({ v: Math.min(1.8, Math.max(0.6, o.v)), w: o.w, ext: 1 }); });
       if (!obs.length) return;
-      var est = (obs.reduce(function (a, b) { return a + b; }, 0) + K_PRIOR) / (obs.length + K_PRIOR), cur = n(s.ent.productivite[k]) || 1;
-      out.push({ cle: "prod:" + k, type: "Productivité", nom: LIBM[k], u: "coef. temps", cur: cur, obs: obs, prop: Math.round(est * 100) / 100, effet: "Durées et coût de main-d'œuvre × " + (Math.round(est * 100) / 100).toFixed(2) + " (1 = cadence théorique)" });
+      var est = wmoy(obs, 1, K_PRIOR), cur = n(s.ent.productivite[k]) || 1;
+      out.push({ cle: "prod:" + k, type: "Productivité", nom: LIBM[k], u: "coef. temps", cur: cur, obs: obs.map(function (o) { return o.v; }), next: obs.filter(function (o) { return o.ext; }).length, prop: Math.round(est * 100) / 100, effet: "Durées et coût de main-d'œuvre × " + (Math.round(est * 100) / 100).toFixed(2) + " (1 = cadence théorique)" });
     });
     // Pertes matériaux
     var mats = {}; rexs.forEach(function (p) { p.rex.mat.forEach(function (m) { if (m.fiable !== false) (mats[m.code] = mats[m.code] || []).push(m.multBase); }); });
@@ -246,13 +248,16 @@ var PIL = (function () {
     var px = {};
     s.projects.forEach(function (p) {
       var coef = (D.REGIONS[p.info.region] || [1])[0];
-      (p.factu.achats || []).forEach(function (a) { if (a.res && n(a.qte) > 0 && n(a.mt) > 0) (px[a.res] = px[a.res] || []).push({ v: n(a.mt) / n(a.qte) / coef, d: a.date || "" }); });
+      (p.factu.achats || []).forEach(function (a) { if (a.res && n(a.qte) > 0 && n(a.mt) > 0) (px[a.res] = px[a.res] || []).push({ v: n(a.mt) / n(a.qte) / coef, d: a.date || "", w: 1 }); });
     });
+    Object.keys(EXT.prix).forEach(function (k) { px[k] = px[k] || []; });
     Object.keys(px).forEach(function (k) {
       var row = s.res.filter(function (r) { return r[0] === k; })[0]; if (!row) return;
-      var obs = px[k].sort(function (a, b) { return a.d < b.d ? 1 : -1; }).slice(0, 6).map(function (x) { return x.v; });   // 6 achats les plus récents
-      var est = (obs.reduce(function (a, b) { return a + b; }, 0) + row[3]) / (obs.length + 1);
-      out.push({ cle: "prix:" + k, type: "Prix", nom: row[1], u: "FCFA/" + row[2] + " (base Dakar)", cur: row[3], obs: obs.map(function (x) { return Math.round(x); }), prop: Math.round(est), effet: "Prix des ouvrages et des devis" });
+      var obs = px[k].sort(function (a, b) { return a.d < b.d ? 1 : -1; }).slice(0, 6);   // 6 achats les plus récents
+      var ex = (EXT.prix[k] || []).slice().sort(function (a, b) { return a.d < b.d ? 1 : -1; }).slice(0, 10).map(function (o) { return { v: o.v, w: o.w, d: o.d, ext: 1 }; });
+      obs = obs.concat(ex); if (!obs.length) return;
+      var est = wmoy(obs, row[3], 1);
+      out.push({ cle: "prix:" + k, type: "Prix", nom: row[1], u: "FCFA/" + row[2] + " (base Dakar)", cur: row[3], obs: obs.map(function (x) { return Math.round(x.v); }), next: ex.length, prop: Math.round(est), effet: "Prix des ouvrages et des devis" });
     });
     return out.filter(function (x) { return Math.abs(x.prop / (x.cur || 1) - 1) >= 0.03 && !s.appr.ignore[x.cle + "=" + x.prop]; });
   }
@@ -356,8 +361,8 @@ var PIL = (function () {
   function pageArchives() {
     X.ui.sub.archives = X.ui.sub.archives || "base";
     var h = '<div class="head"><h1>Archives, REX et apprentissage</h1><p>Chaque chantier clôturé est archivé avec ses dates, ses montants et son retour d\'expérience (REX), calculé automatiquement. L\'application en tire des corrections de prix, de cadences et de pertes, que vous validez.</p></div>';
-    h += X.tabs("archives", [["base", "Archives"], ["rex", "REX du projet actif"], ["appr", "Apprentissage" + (suggestions().length ? " (" + suggestions().length + ")" : "")]]);
-    return h + ({ base: arcBase, rex: arcRex, appr: arcAppr }[X.ui.sub.archives] || arcBase)();
+    h += X.tabs("archives", [["base", "Archives"], ["rex", "REX du projet actif"], ["appr", "Apprentissage" + (suggestions().length ? " (" + suggestions().length + ")" : "")], ["ext", "Données externes"]]);
+    return h + ({ base: arcBase, rex: arcRex, appr: arcAppr, ext: function () { return window.OUT ? OUT.externesHTML() : ""; } }[X.ui.sub.archives] || arcBase)();
   }
   function filtres() { X.ui.arc = X.ui.arc || { an: "", type: "", region: "", txt: "" }; return X.ui.arc; }
   function arcBase() {
@@ -413,7 +418,7 @@ var PIL = (function () {
     var h = '<div class="kpis">' + X.kpi("REX disponibles", nbRex, "chantiers clôturés") + X.kpi("Suggestions", sg.length, "à valider") + X.kpi("Corrections appliquées", s.appr.journal.length, "depuis le début") + X.kpi("Dispersion des durées", disp.appris ? "± " + Math.round(100 * disp.sigma) + " %" : "par défaut", disp.appris ? "apprise sur " + disp.n + " tâches" : "5 tâches mesurées minimum") + "</div>";
     h += '<div class="card"><h2>Comment l\'application apprend</h2><p class="hint">À chaque chantier clôturé, le REX mesure l\'écart entre le prévu et le réel. Les corrections proposées sont <b>prudentes</b> : la valeur actuelle compte comme deux chantiers, donc un seul chantier atypique ne bouleverse pas vos prix. Les prix d\'achat apprennent dès le premier achat renseigné (6 derniers achats, ramenés au prix de Dakar). Rien n\'est modifié sans votre accord. Les marchés déjà figés ne changent pas ; les devis non figés et les plannings sont recalculés.</p></div>';
     h += '<div class="card"><h2>Corrections proposées</h2>' + (sg.length ? '<div class="bar-btn"><button class="btn p" id="apTout">Tout appliquer</button></div><table class="t"><tr><th class="l">Type</th><th class="l">Paramètre</th><th>Actuel</th><th class="l">Observé</th><th>Proposé</th><th class="l">Effet</th><th></th></tr>' + sg.map(function (x, i) {
-      return '<tr><td class="l">' + esc(x.type) + '</td><td class="l">' + esc(x.nom) + ' <span class="hint">' + esc(x.u) + "</span></td><td>" + (x.type === "Productivité" ? x.cur.toFixed(2) : fmt(x.cur)) + '</td><td class="l">' + x.obs.map(function (v) { return x.type === "Productivité" ? v.toFixed(2) : fmt(v); }).join(" · ") + ' <span class="hint">(' + x.obs.length + ")</span></td><td><b>" + (x.type === "Productivité" ? x.prop.toFixed(2) : fmt(x.prop)) + '</b></td><td class="l small">' + esc(x.effet) + '</td><td><button class="btn sm p" data-ap="' + i + '">Appliquer</button> <button class="btn sm" data-ign="' + i + '">Ignorer</button></td></tr>';
+      return '<tr><td class="l">' + esc(x.type) + '</td><td class="l">' + esc(x.nom) + ' <span class="hint">' + esc(x.u) + "</span></td><td>" + (x.type === "Productivité" ? x.cur.toFixed(2) : fmt(x.cur)) + '</td><td class="l">' + x.obs.slice(0, 8).map(function (v) { return x.type === "Productivité" ? v.toFixed(2) : fmt(v); }).join(" · ") + (x.obs.length > 8 ? " …" : "") + ' <span class="hint">(' + x.obs.length + (x.next ? ", dont " + x.next + " externe(s)" : "") + ")</span></td><td><b>" + (x.type === "Productivité" ? x.prop.toFixed(2) : fmt(x.prop)) + '</b></td><td class="l small">' + esc(x.effet) + '</td><td><button class="btn sm p" data-ap="' + i + '">Appliquer</button> <button class="btn sm" data-ign="' + i + '">Ignorer</button></td></tr>';
     }).join("") + "</table>" : '<p class="hint">Aucune correction à proposer pour le moment. ' + (nbRex ? "Vos paramètres sont cohérents avec vos chantiers." : "Clôturez vos premiers chantiers (avec rapports terrain et achats) pour démarrer l'apprentissage.") + "</p>") + "</div>";
     if (s.appr.journal.length) h += '<div class="card"><h2>Journal des corrections</h2><table class="t"><tr><th>Date</th><th class="l">Paramètre</th><th>Avant</th><th>Après</th><th>Chantiers / achats</th><th></th></tr>' + s.appr.journal.map(function (j, i) { return "<tr><td>" + fr(j.date) + '</td><td class="l">' + esc(j.nom) + "</td><td>" + fmt(j.avant, j.avant < 10 ? 2 : 0) + "</td><td>" + fmt(j.apres, j.apres < 10 ? 2 : 0) + "</td><td>" + j.n + '</td><td><button class="btn sm" data-annul="' + i + '">Annuler</button></td></tr>'; }).join("") + "</table></div>";
     var pr = s.ent.productivite, ks = Object.keys(pr).filter(function (k) { return pr[k] !== 1; });
@@ -422,6 +427,7 @@ var PIL = (function () {
   }
   function postArchives() {
     X.bindTabs("archives"); X.linkGo();
+    if (X.ui.sub.archives === "ext" && window.OUT) return OUT.postExternes();
     var s = S(), b;
     document.querySelectorAll("[data-af]").forEach(function (el) { el.onchange = function () { filtres()[el.dataset.af] = el.value; X.renderPage(); }; });
     document.querySelectorAll("[data-clot]").forEach(function (bt) { bt.onclick = function () {

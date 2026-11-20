@@ -290,7 +290,7 @@ var SYNC = (function () {
     if (!client()) return h + '<p class="hint">Module de synchronisation indisponible.</p></div>';
     if (!E.user) {
       return h + '<p>Connectez-vous pour partager vos chantiers entre vos appareils, recevoir les rapports de vos collaborateurs en temps réel et donner un suivi en ligne à vos clients.</p>' +
-        '<p class="hint"><b>Maick :</b> créez votre compte en premier ; le premier compte devient administrateur. <b>Collaborateurs :</b> créez votre compte, puis attendez que l\'administrateur l\'active et vous affecte vos chantiers.</p>' +
+        '<p class="hint"><b>Administrateur (Malick) :</b> créez votre compte en premier ; le premier compte devient administrateur. <b>Collaborateurs :</b> créez votre compte, puis attendez que l\'administrateur l\'active et vous affecte vos chantiers.</p>' +
         '<div class="form"><label class="f"><span>E-mail</span><input type="email" id="sbEmail" autocomplete="username"></label><label class="f"><span>Mot de passe (8 caractères minimum)</span><input type="password" id="sbMdp" autocomplete="current-password"></label><label class="f"><span>Nom (pour un nouveau compte)</span><input type="text" id="sbNom" placeholder="Prénom Nom"></label></div>' +
         '<div class="bar-btn"><button class="btn p" id="sbCon">Se connecter</button><button class="btn" id="sbIns">Créer mon compte</button></div><p id="sbMsg" class="hint"></p></div>';
     }

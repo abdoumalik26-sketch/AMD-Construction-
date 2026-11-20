@@ -282,6 +282,8 @@ var PLAN = (function () {
         var ok = raps.some(function (r) { return (r.pa || {})[t.id]; });
         if (!ok) add("orange", p, "Qualité", "Point d'arrêt « " + t.pa + " » : aucune photo de contrôle reçue (" + t.nom + " à " + Math.round(t.pct) + " %).");
       });
+      // 8 bis. sécurité (module QHSE)
+      if (typeof QHSE !== "undefined") QHSE.alertes(p, jour, F, add);
       // 9. facturation
       var sit = ((p.factu || {}).docs || []).filter(function (d) { return d.type === "situation"; });
       var derniere = sit.reduce(function (m, d) { return maxS(m, d.date); }, null);

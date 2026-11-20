@@ -292,7 +292,7 @@ var DATA = (function () {
   var ENTREPRISE = {
     nom: "2AM CONSTRUCTION", slogan: "Bâtir aujourd'hui · Construire demain — Concevoir, construire, valoriser", adresse: "Sénégal",
     tel: "+33 6 49 99 49 78", email: "", ninea: "", rccm: "", logo: (typeof LOGO_2AM !== "undefined" ? LOGO_2AM : ""),
-    responsable: "Maick DIALLO", fonction: "Ingénieur en génie civil",
+    responsable: "Malick DIALLO", fonction: "Ingénieur en génie civil",
     tva: 18, fc: 8, fg: 10, aleas: 3, benef: 10, validite: 30, acompte: 40,
     camionSable: 16, camionGravier: 8, retenue: 5, delaiPaiement: 30, factuSeq: 0,
     paiementInfo: "Paiement par virement bancaire, Wave ou Orange Money.",

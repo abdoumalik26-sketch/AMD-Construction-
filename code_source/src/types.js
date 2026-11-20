@@ -178,11 +178,12 @@ var TYP = (function () {
       fld("Représentant de l'entreprise", "reception.ent", { text: true, ph: S().ent.responsable }) + "</div>" +
       '<label class="f wide"><span>Observations / motif (en cas de refus)</span>' + inp("reception.obs", { area: true, rows: 3 }) + "</label>";
     h += '<p style="margin-top:10px">' + (r.decision === "avec" ? "Les <b>" + ouv.length + "</b> réserve(s) ouverte(s) de l'onglet Réserves seront jointes au PV." : r.decision === "sans" && ouv.length ? '<span class="badge orange">Attention</span> ' + ouv.length + " réserve(s) sont encore ouvertes dans l'onglet Réserves : choisissez « avec réserves » ou levez-les." : "") + "</p>" +
+      (window.OUT ? '<div style="margin:8px 0">' + OUT.signatureHTML("pvMO", "Signature du maître d'ouvrage") + (r.moe ? OUT.signatureHTML("pvMOE", "Signature du maître d'œuvre") : "") + '<span class="hint" style="display:inline-block;max-width:280px">Votre signature et votre cachet (Paramètres) sont ajoutés automatiquement.</span></div>' : "") +
       '<div class="bar-btn"><button class="btn p" id="pdfPV">Générer le PDF du procès-verbal</button>' + (r.decision === "sans" || r.decision === "avec" ? '<button class="btn" id="pvTermine">Marquer le chantier comme terminé</button>' : "") + "</div></div>";
     return h;
   }
   function postReception() {
-    $("pdfPV").onclick = pdfPV;
+    $("pdfPV").onclick = pdfPV; if (window.OUT) OUT.lierSignatures();
     var t = $("pvTermine"); if (t) t.onclick = function () { var p = P(); p.statut = "termine"; if (p.reception.date) p.dateReception = p.reception.date; X.save(); X.toast("Chantier marqué comme terminé"); X.renderPage(); };
   }
   function pdfPV() {
@@ -214,6 +215,7 @@ var TYP = (function () {
     cols.forEach(function (c, i) {
       var x = 14 + i * (w + 5); doc.setFont("helvetica", "bold"); doc.setFontSize(9); doc.text(h.t(c[0]), x + 1, y); doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.text(h.t(c[1] + " (lu et approuvé, signature)"), x + 1, y + 4, { maxWidth: w - 2 });
       doc.setDrawColor(180, 180, 180); doc.rect(x, y + 7, w, 26);
+      if (window.OUT) { var sg = p.signatures || {}; if (i === 1) OUT.signerPDF(doc, x, y + 7, w, 26, e.signature, e.cachet); else OUT.signerPDF(doc, x, y + 7, w, 26, ((i === 0 ? sg.pvMO : sg.pvMOE) || {}).img, null); }
     });
     h.footers(doc, "PV de réception"); X.saveFile(doc.output("blob"), "PV_reception_" + X.slug(p.info.nom) + ".pdf");
   }
