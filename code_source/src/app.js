@@ -2,7 +2,7 @@
    PILOTE BTP — interface
    ============================================================ */
 var APP = (function () {
-  var D = DATA, C = CALC, KEY = "piloteBTP_v1", VERSION = "2026.11.20-h";
+  var D = DATA, C = CALC, KEY = "piloteBTP_v1", VERSION = "2026.11.20-i";
   var S, ui = { page: "dash", sub: { metres: "fond", prix: "dqe" }, niv: 0, ouv: null, phase: "Toutes", ouvEdit: "3.4" };
   var $ = function (id) { return document.getElementById(id); };
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
@@ -27,7 +27,7 @@ var APP = (function () {
     Object.keys(D.OUV).forEach(function (k) { if (!s.ouv[k]) s.ouv[k] = clone(D.OUV[k]); });
     s.ent.capacite = Object.assign({}, D.ENTREPRISE.capacite, s.ent.capacite || {});
     s.ent.productivite = s.ent.productivite || {};
-    s.externes = s.externes || { lots: [] }; s.externes.lots = s.externes.lots || []; s.aoMemo = s.aoMemo || {};
+    s.externes = s.externes || { lots: [] }; s.externes.lots = s.externes.lots || []; s.aoMemo = s.aoMemo || {}; if (!s.guide) s.guide = { vu: (s.projects || []).some(function (p) { return !/exemple/i.test((p.info && p.info.nom) || ""); }) };
     s.appr = s.appr || { journal: [], ignore: {} }; s.appr.journal = s.appr.journal || []; s.appr.ignore = s.appr.ignore || {};
     s.sauvegarde = s.sauvegarde || {};
     s.sync = s.sync || {}; s.sync.hash = s.sync.hash || {}; s.sync.remoteAt = s.sync.remoteAt || {}; s.sync.supprimes = s.sync.supprimes || []; s.sync.file = s.sync.file || [];
@@ -108,7 +108,7 @@ var APP = (function () {
     if (o.check) return '<input type="checkbox" data-b="' + b + '"' + (v ? " checked" : "") + ">";
     if (o.options) return '<select data-b="' + b + '">' + o.options.map(function (x) { var val = Array.isArray(x) ? x[0] : x, lab = Array.isArray(x) ? x[1] : x; return '<option value="' + esc(val) + '"' + (String(val) === String(v) ? " selected" : "") + ">" + esc(lab) + "</option>"; }).join("") + "</select>";
     if (o.area) return '<textarea data-b="' + b + '" rows="' + (o.rows || 4) + '">' + esc(v) + "</textarea>";
-    return '<input ' + (o.text ? 'type="text"' : o.date ? 'type="date"' : 'type="number" step="any"') + ' data-b="' + b + '" value="' + esc(v == null ? "" : v) + '"' + (o.w ? ' style="width:' + o.w + '"' : "") + (o.ph ? ' placeholder="' + esc(o.ph) + '"' : "") + ">";
+    return '<input ' + (o.text ? 'type="text"' : o.date ? 'type="date"' : 'type="number" step="any"') + ' data-b="' + b + '" value="' + esc(v == null ? "" : v) + '"' + (o.cls ? ' class="' + o.cls + '"' : "") + (o.w ? ' style="width:' + o.w + '"' : "") + (o.ph ? ' placeholder="' + esc(o.ph) + '"' : "") + ">";
   }
   function fld(label, path, o, help) { return '<label class="f"><span>' + label + (help ? ' <i class="hl" title="' + esc(help) + '">?</i>' : "") + "</span>" + inp(path, o) + "</label>"; }
   function bindAll(root) {
@@ -158,6 +158,8 @@ var APP = (function () {
     c.innerHTML = f();
     bindAll(c);
     if (POST[ui.page]) POST[ui.page]();
+    if (window.GUIDE) GUIDE.apresRendu(ui.page);
+    if (window.HEBDO) HEBDO.apresRendu(ui.page);
   }
 
   /* ================= PAGES ================= */
@@ -171,10 +173,12 @@ var APP = (function () {
     var marge = q.ht - q.ds;
     var maxPh = Math.max.apply(null, q.phases.map(function (x) { return x.total; }).concat([1]));
     var h = '<div class="head"><h1>Tableau de bord</h1><p>Projet actif : <b>' + esc(p.info.nom) + "</b> · " + esc(p.info.client || "client non renseigné") + " · " + esc(p.info.ville || p.info.region) + "</p></div>";
+    if (window.GUIDE) h += GUIDE.dashHTML();
+    if (window.HEBDO) h += HEBDO.dashHTML();
     if (window.PIL) h += PIL.dashHTML();
     if (window.COMPTA) h += COMPTA.alertesHTML();
     if (window.OUT) h += OUT.entrepriseHTML();
-    if (S.demo) h += '<div class="note">Le projet « Villa R+1 – exemple » est <b>fictif</b>, avec des prix <b>indicatifs</b>. Créez votre projet dans <a href="#" data-go="projets">Projets</a> et mettez vos prix réels dans <a href="#" data-go="prix:biblio">Études de prix › Bibliothèque</a>.</div>';
+    if (S.demo) h += '<div class="note">Le projet « Villa R+1 – exemple » est <b>fictif</b>, avec des prix <b>indicatifs</b>. Créez votre projet dans <a href="#" data-go="projets">Projets</a> et mettez vos prix réels dans <a href="#" data-go="prix:biblio">Études de prix › Bibliothèque</a>.' + (S.projects.some(function (x) { return /exemple/i.test(x.info.nom); }) ? ' <button class="btn sm danger" id="gSupEx" style="margin-left:6px">Supprimer le projet exemple</button>' : "") + "</div>";
     h += '<div class="kpis">' + kpi("Montant TTC", fmt(q.ttc), "FCFA · HT " + fmt(q.ht)) + kpi("Coût au m²", fmt(q.surface ? q.ttc / q.surface : 0), "FCFA TTC / m² de plancher (" + fmt(q.surface) + " m²)") +
       kpi("Déboursé sec", fmt(q.ds), "FCFA · coefficient K = " + q.k.toFixed(3)) + kpi("Marge brute prévue", fmt(marge), "FCFA · " + fmt(q.ht ? 100 * marge / q.ht : 0, 1) + " % du HT") +
       kpi("Ciment", fmt(b.total.CIM || 0, 1) + " t", fmt(Math.ceil((b.total.CIM || 0) * 20)) + " sacs") + kpi("Acier", fmt(acier / 1000, 2) + " t", fmt(q.surface ? acier / q.surface : 0, 1) + " kg/m²") +
@@ -507,7 +511,9 @@ var APP = (function () {
     var phases = ["Toutes"].concat(q.phases.map(function (x) { return x.nom; }).filter(function (n) { return b.parPhase[n]; }));
     if (phases.indexOf(ui.phase) < 0) ui.phase = "Toutes";
     var data = ui.phase === "Toutes" ? b.total : b.parPhase[ui.phase] || {};
-    var h = '<div class="head"><h1>Approvisionnements</h1><p>Besoins en matériaux calculés à partir des sous-détails (pertes comprises), convertis en unités d\'achat : sacs, barres, camions.</p></div>';
+    var h = '<div class="head"><h1>Approvisionnements</h1><p>Besoins en matériaux, bons de commande aux fournisseurs, stock du chantier et matériel.</p></div>';
+    ui.sub.appro = ui.sub.appro || "besoins";
+    if (window.CHT) { h += tabs("appro", CHT.TABS_APPRO); if (ui.sub.appro !== "besoins") return h + CHT.pageAppro(ui.sub.appro); }
     h += '<div class="bar-btn"><label>Phase : <select id="phSel">' + phases.map(function (x) { return "<option" + (x === ui.phase ? " selected" : "") + ">" + esc(x) + "</option>"; }).join("") + '</select></label><button class="btn p" id="pdfBC">Générer le bon de commande (PDF)</button></div>';
     var tot = 0, rows = Object.keys(data).filter(function (k) { return data[k] > 0.0001; }).sort(function (a, c) { return data[c] * cat.res[c].p - data[a] * cat.res[a].p; });
     h += '<div class="card"><table class="t"><tr><th class="l">Matériau</th><th>Quantité</th><th class="l">En unités d\'achat</th><th>P.U. estimé</th><th>Montant estimé</th></tr>';
@@ -517,7 +523,7 @@ var APP = (function () {
     h += '<div class="card"><h2>Main-d\'œuvre totale du projet (journées)</h2><table class="t"><tr><th class="l">Métier</th><th>Journées</th><th>Coût estimé</th></tr>' + Object.keys(b.mo).map(function (k) { return '<tr><td class="l">' + esc(cat.res[k].d) + "</td><td>" + fmt(b.mo[k]) + "</td><td>" + fmt(b.mo[k] * cat.res[k].p) + "</td></tr>"; }).join("") + "</table><p class='hint'>Ces journées servent à calculer les durées du planning (cadences apprises comprises).</p></div>";
     return h;
   };
-  POST.appro = function () { $("phSel").onchange = function () { ui.phase = this.value; renderPage(); }; $("pdfBC").onclick = function () { PDF.commande(ui.phase); }; };
+  POST.appro = function () { bindTabs("appro"); if (window.CHT && ui.sub.appro !== "besoins") return CHT.postAppro(ui.sub.appro); $("phSel").onchange = function () { ui.phase = this.value; renderPage(); }; $("pdfBC").onclick = function () { PDF.commande(ui.phase); }; };
 
   /* ---- Paramètres ---- */
   PAGES.params = function () {
@@ -542,7 +548,7 @@ var APP = (function () {
     h += '<div class="card"><h2>Effectif disponible de l\'entreprise (tous chantiers)</h2><div class="form">' + Object.keys(PLAN.CAPACITE).map(function (k) { return fld(PLAN.LIB[k].charAt(0).toUpperCase() + PLAN.LIB[k].slice(1), "capacite." + k, e); }).join("") +
       '</div><p class="hint">Le moteur d\'anticipation compare ces effectifs aux besoins de tous les chantiers en cours, jour par jour, et vous prévient des surcharges.</p></div>';
     h += '<div class="card"><h2>Version de l\'application</h2><p>' + VERSION + (location.protocol === "file:" ? ' — <b>fichier local</b> : il ne se met pas à jour tout seul. Utilisez l\'adresse en ligne de l\'application pour recevoir les mises à jour automatiquement.' : " — mises à jour automatiques activées (dès qu'il y a internet).") + "</p></div>";
-    h += (window.COMPTA ? COMPTA.regimeHTML() : "") + (window.OUT ? OUT.entrepriseSigHTML() : "") + (window.SYNC ? SYNC.paramsHTML() : "") + (window.PIL ? PIL.sauvegardeHTML() : "");
+    h += (window.COMPTA ? COMPTA.regimeHTML() : "") + (window.OUT ? OUT.entrepriseSigHTML() : "") + (window.SYNC ? SYNC.paramsHTML() : "") + (window.HEBDO ? HEBDO.paramsHTML() : "") + (window.PIL ? PIL.sauvegardeHTML() : "");
     return h;
   };
   function updateK() { var e = $("kVal"); if (e) e.textContent = C.K(S.ent).toFixed(3); }

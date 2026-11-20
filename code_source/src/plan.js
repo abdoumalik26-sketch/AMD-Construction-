@@ -152,12 +152,57 @@ var PLAN = (function () {
     // passe arrière (jours calendaires)
     for (var i = T.length - 1; i >= 0; i--) {
       var t = T[i], succ = T.filter(function (s) { return s.deps.some(function (d) { return d[0] === t.id; }); });
-      t.finTard = succ.length ? succ.reduce(function (m, s) { var lag = s.deps.filter(function (d) { return d[0] === t.id; })[0][1]; var v = addDays(s.debutTard, -1 - lag); return !m || v < m ? v : m; }, null) : fin;
+      t.finTard = dernierOuvre(succ.length ? succ.reduce(function (m, s) { var lag = s.deps.filter(function (d) { return d[0] === t.id; })[0][1]; var v = addDays(s.debutTard, -1 - lag); return !m || v < m ? v : m; }, null) : fin, cfg);
       t.debutTard = addDays(t.finTard, -diff(t.debut, t.fin));
-      t.marge = diff(t.debut, t.debutTard);
+      t.marge = margeOuvree(t.fin, t.finTard, cfg);   // en jours ouvrés : un week-end n'est pas une marge
       t.critique = t.marge <= 0;
     }
-    return { taches: T, cfg: cfg, debut: cfg.debut, fin: fin, ligneTache: r.ligneTache, duree: diff(cfg.debut, fin) + 1 };
+    margesLibres(T, "debut", "fin", "margeLibre", fin, cfg);
+    return { taches: T, cfg: cfg, debut: cfg.debut, fin: fin, ligneTache: r.ligneTache, duree: diff(cfg.debut, fin) + 1, chaine: chaine(T, "debut", "fin", "critique", fin) };
+  }
+  /* ---------------- Chemin critique : outils ---------------- */
+  // marge libre : retard possible sans décaler aucune tâche suivante
+  function dernierOuvre(d, cfg) { var k = 0; while (!ouvre(d, cfg) && k++ < 14) d = addDays(d, -1); return d; }
+  function margeOuvree(fin, finTard, cfg) { return finTard <= fin ? 0 : joursOuvres(addDays(fin, 1), finTard, cfg); }
+  function margesLibres(T, kd, kf, out, finProjet, cfg) {
+    T.forEach(function (t) {
+      var succ = T.filter(function (s) { return s.deps.some(function (d) { return d[0] === t.id; }); });
+      var lim = succ.length ? succ.reduce(function (m, s) { var lag = s.deps.filter(function (d) { return d[0] === t.id; })[0][1]; var v = addDays(s[kd], -1 - lag); return !m || v < m ? v : m; }, null) : finProjet;
+      t[out] = margeOuvree(t[kf], lim, cfg);
+    });
+  }
+  // chaîne critique ordonnée : on remonte depuis la tâche qui finit le projet, de prédécesseur « pilote » en prédécesseur pilote
+  function chaine(T, kd, kf, kc, finProjet) {
+    var idx = {}; T.forEach(function (t) { idx[t.id] = t; });
+    var der = T.filter(function (t) { return t[kc] && t[kf] === finProjet; }).pop() || T.filter(function (t) { return t[kf] === finProjet; }).pop();
+    var out = [], vu = {};
+    while (der && !vu[der.id]) {
+      vu[der.id] = 1; out.unshift(der);
+      var pil = null, best = -1e9;
+      der.deps.forEach(function (d) { var p = idx[d[0]]; if (!p) return; var v = diff(der[kd], addDays(p[kf], 1 + d[1])); var sc = (p[kc] ? 1000 : 0) + v; if (sc > best) { best = sc; pil = p; } });
+      der = pil;
+    }
+    return out.map(function (t) { return t.id; });
+  }
+  // chemin critique recalculé sur la prévision (avancement réel)
+  function critiqueReel(F) {
+    var T = F.taches.filter(function (t) { return t.pct < 100; }), fin = F.fin;
+    for (var i = T.length - 1; i >= 0; i--) {
+      var t = T[i], succ = T.filter(function (s) { return s.deps.some(function (d) { return d[0] === t.id; }); });
+      t.pFinTard = dernierOuvre(succ.length ? succ.reduce(function (m, s) { var lag = s.deps.filter(function (d) { return d[0] === t.id; })[0][1]; var v = addDays(s.pDebutTard, -1 - lag); return !m || v < m ? v : m; }, null) : fin, F.cfg);
+      t.pDebutTard = addDays(t.pFinTard, -diff(t.pDebut, t.pFin));
+      t.pMarge = margeOuvree(t.pFin, t.pFinTard, F.cfg); t.pCritique = t.pMarge <= 0;
+    }
+    return chaine(T, "pDebut", "pFin", "pCritique", fin);
+  }
+  // « Et si… » : retard de n jours ouvrés sur une tâche
+  function simulerRetard(p, q, id, jours) {
+    var c = JSON.parse(JSON.stringify(p)); c.planning = c.planning || {}; var base = planifier(p, q), t = base.taches.filter(function (x) { return x.id === id; })[0];
+    if (!t) return null;
+    c.planning.ov = c.planning.ov || {}; c.planning.ov[id] = Object.assign({}, c.planning.ov[id] || {}, { dur: t.dur + jours });
+    var s = planifier(c, q);
+    var dec = s.fin > base.fin ? joursOuvres(addDays(base.fin, 1), s.fin, base.cfg) : 0;
+    return { finAvant: base.fin, finApres: s.fin, decalage: dec, calendaire: diff(base.fin, s.fin), marge: t.marge, critique: t.critique };
   }
 
   /* ---------------- Avancement terrain ---------------- */
@@ -372,6 +417,6 @@ var PLAN = (function () {
   }
 
   return { d2s: d2s, s2d: s2d, addDays: addDays, diff: diff, fr: fr, ouvre: ouvre, finTravail: finTravail, cfgOf: cfgOf, EQUIPES: EQUIPES, APPRO: APPRO, CAPACITE: CAPACITE, LIB: LIB,
-    taches: taches, planifier: planifier, prevision: prevision, ecartsLots: ecartsLots, prochainOuvre: prochainOuvre, joursOuvres: joursOuvres, avancements: avancements, besoinsTache: besoinsTache, consommations: consommations, alertes: alertes, situation: situation, tresorerie: tresorerie, pctPrevu: pctPrevu };
+    taches: taches, planifier: planifier, prevision: prevision, critiqueReel: critiqueReel, simulerRetard: simulerRetard, chaine: chaine, ecartsLots: ecartsLots, prochainOuvre: prochainOuvre, joursOuvres: joursOuvres, avancements: avancements, besoinsTache: besoinsTache, consommations: consommations, alertes: alertes, situation: situation, tresorerie: tresorerie, pctPrevu: pctPrevu };
 })();
 if (typeof module !== "undefined") module.exports = PLAN;

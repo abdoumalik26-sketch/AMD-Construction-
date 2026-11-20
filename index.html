@@ -110,7 +110,7 @@ input.forced{background:var(--warml);border-color:var(--warm)}
 svg.gantt text,svg.courbe text{font-family:inherit}
 .gantt .tl{font-size:11.5px;fill:#333}.gantt .tl.crit{fill:#a12f2f;font-weight:600}.gantt .ml,.courbe .ml{font-size:10.5px;fill:#777}
 .gantt .gl,.courbe .gl{stroke:#e6e3dc;stroke-width:1}.gantt .hiv{fill:#e3edf6}
-.gantt .bar{fill:#2b4a8c}.gantt .bar.crit{fill:#c23b3b}.gantt .done{fill:#f2a51e}.gantt .ref{fill:#9aa}
+.gantt .lien{fill:none;stroke:#8a94a8;stroke-width:1}.gantt .lien.crit{stroke:#c23b3b;stroke-width:1.6}.gantt .bar{fill:#2b4a8c}.gantt .bar.crit{fill:#c23b3b}.gantt .done{fill:#f2a51e}.gantt .ref{fill:#9aa}
 .gantt .pa{font-size:10px;fill:#b5652b}.today{stroke:#f2a51e;stroke-width:1.5;stroke-dasharray:3 3}.tdl{font-size:10px;fill:#b5751a}
 .livr{stroke:#c23b3b;stroke-width:1.5}.lvl{font-size:10px;fill:#c23b3b}
 .courbe .prevu{fill:none;stroke:#9aa;stroke-width:2;stroke-dasharray:5 4}.courbe .reel{fill:none;stroke:#f2a51e;stroke-width:2.5}.courbe .reelp{fill:#f2a51e}
@@ -1348,12 +1348,57 @@ var PLAN = (function () {
     // passe arrière (jours calendaires)
     for (var i = T.length - 1; i >= 0; i--) {
       var t = T[i], succ = T.filter(function (s) { return s.deps.some(function (d) { return d[0] === t.id; }); });
-      t.finTard = succ.length ? succ.reduce(function (m, s) { var lag = s.deps.filter(function (d) { return d[0] === t.id; })[0][1]; var v = addDays(s.debutTard, -1 - lag); return !m || v < m ? v : m; }, null) : fin;
+      t.finTard = dernierOuvre(succ.length ? succ.reduce(function (m, s) { var lag = s.deps.filter(function (d) { return d[0] === t.id; })[0][1]; var v = addDays(s.debutTard, -1 - lag); return !m || v < m ? v : m; }, null) : fin, cfg);
       t.debutTard = addDays(t.finTard, -diff(t.debut, t.fin));
-      t.marge = diff(t.debut, t.debutTard);
+      t.marge = margeOuvree(t.fin, t.finTard, cfg);   // en jours ouvrés : un week-end n'est pas une marge
       t.critique = t.marge <= 0;
     }
-    return { taches: T, cfg: cfg, debut: cfg.debut, fin: fin, ligneTache: r.ligneTache, duree: diff(cfg.debut, fin) + 1 };
+    margesLibres(T, "debut", "fin", "margeLibre", fin, cfg);
+    return { taches: T, cfg: cfg, debut: cfg.debut, fin: fin, ligneTache: r.ligneTache, duree: diff(cfg.debut, fin) + 1, chaine: chaine(T, "debut", "fin", "critique", fin) };
+  }
+  /* ---------------- Chemin critique : outils ---------------- */
+  // marge libre : retard possible sans décaler aucune tâche suivante
+  function dernierOuvre(d, cfg) { var k = 0; while (!ouvre(d, cfg) && k++ < 14) d = addDays(d, -1); return d; }
+  function margeOuvree(fin, finTard, cfg) { return finTard <= fin ? 0 : joursOuvres(addDays(fin, 1), finTard, cfg); }
+  function margesLibres(T, kd, kf, out, finProjet, cfg) {
+    T.forEach(function (t) {
+      var succ = T.filter(function (s) { return s.deps.some(function (d) { return d[0] === t.id; }); });
+      var lim = succ.length ? succ.reduce(function (m, s) { var lag = s.deps.filter(function (d) { return d[0] === t.id; })[0][1]; var v = addDays(s[kd], -1 - lag); return !m || v < m ? v : m; }, null) : finProjet;
+      t[out] = margeOuvree(t[kf], lim, cfg);
+    });
+  }
+  // chaîne critique ordonnée : on remonte depuis la tâche qui finit le projet, de prédécesseur « pilote » en prédécesseur pilote
+  function chaine(T, kd, kf, kc, finProjet) {
+    var idx = {}; T.forEach(function (t) { idx[t.id] = t; });
+    var der = T.filter(function (t) { return t[kc] && t[kf] === finProjet; }).pop() || T.filter(function (t) { return t[kf] === finProjet; }).pop();
+    var out = [], vu = {};
+    while (der && !vu[der.id]) {
+      vu[der.id] = 1; out.unshift(der);
+      var pil = null, best = -1e9;
+      der.deps.forEach(function (d) { var p = idx[d[0]]; if (!p) return; var v = diff(der[kd], addDays(p[kf], 1 + d[1])); var sc = (p[kc] ? 1000 : 0) + v; if (sc > best) { best = sc; pil = p; } });
+      der = pil;
+    }
+    return out.map(function (t) { return t.id; });
+  }
+  // chemin critique recalculé sur la prévision (avancement réel)
+  function critiqueReel(F) {
+    var T = F.taches.filter(function (t) { return t.pct < 100; }), fin = F.fin;
+    for (var i = T.length - 1; i >= 0; i--) {
+      var t = T[i], succ = T.filter(function (s) { return s.deps.some(function (d) { return d[0] === t.id; }); });
+      t.pFinTard = dernierOuvre(succ.length ? succ.reduce(function (m, s) { var lag = s.deps.filter(function (d) { return d[0] === t.id; })[0][1]; var v = addDays(s.pDebutTard, -1 - lag); return !m || v < m ? v : m; }, null) : fin, F.cfg);
+      t.pDebutTard = addDays(t.pFinTard, -diff(t.pDebut, t.pFin));
+      t.pMarge = margeOuvree(t.pFin, t.pFinTard, F.cfg); t.pCritique = t.pMarge <= 0;
+    }
+    return chaine(T, "pDebut", "pFin", "pCritique", fin);
+  }
+  // « Et si… » : retard de n jours ouvrés sur une tâche
+  function simulerRetard(p, q, id, jours) {
+    var c = JSON.parse(JSON.stringify(p)); c.planning = c.planning || {}; var base = planifier(p, q), t = base.taches.filter(function (x) { return x.id === id; })[0];
+    if (!t) return null;
+    c.planning.ov = c.planning.ov || {}; c.planning.ov[id] = Object.assign({}, c.planning.ov[id] || {}, { dur: t.dur + jours });
+    var s = planifier(c, q);
+    var dec = s.fin > base.fin ? joursOuvres(addDays(base.fin, 1), s.fin, base.cfg) : 0;
+    return { finAvant: base.fin, finApres: s.fin, decalage: dec, calendaire: diff(base.fin, s.fin), marge: t.marge, critique: t.critique };
   }
 
   /* ---------------- Avancement terrain ---------------- */
@@ -1568,7 +1613,7 @@ var PLAN = (function () {
   }
 
   return { d2s: d2s, s2d: s2d, addDays: addDays, diff: diff, fr: fr, ouvre: ouvre, finTravail: finTravail, cfgOf: cfgOf, EQUIPES: EQUIPES, APPRO: APPRO, CAPACITE: CAPACITE, LIB: LIB,
-    taches: taches, planifier: planifier, prevision: prevision, ecartsLots: ecartsLots, prochainOuvre: prochainOuvre, joursOuvres: joursOuvres, avancements: avancements, besoinsTache: besoinsTache, consommations: consommations, alertes: alertes, situation: situation, tresorerie: tresorerie, pctPrevu: pctPrevu };
+    taches: taches, planifier: planifier, prevision: prevision, critiqueReel: critiqueReel, simulerRetard: simulerRetard, chaine: chaine, ecartsLots: ecartsLots, prochainOuvre: prochainOuvre, joursOuvres: joursOuvres, avancements: avancements, besoinsTache: besoinsTache, consommations: consommations, alertes: alertes, situation: situation, tresorerie: tresorerie, pctPrevu: pctPrevu };
 })();
 if (typeof module !== "undefined") module.exports = PLAN;
 </script>
@@ -1576,7 +1621,7 @@ if (typeof module !== "undefined") module.exports = PLAN;
    PILOTE BTP — interface
    ============================================================ */
 var APP = (function () {
-  var D = DATA, C = CALC, KEY = "piloteBTP_v1", VERSION = "2026.11.20-h";
+  var D = DATA, C = CALC, KEY = "piloteBTP_v1", VERSION = "2026.11.20-i";
   var S, ui = { page: "dash", sub: { metres: "fond", prix: "dqe" }, niv: 0, ouv: null, phase: "Toutes", ouvEdit: "3.4" };
   var $ = function (id) { return document.getElementById(id); };
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
@@ -1601,7 +1646,7 @@ var APP = (function () {
     Object.keys(D.OUV).forEach(function (k) { if (!s.ouv[k]) s.ouv[k] = clone(D.OUV[k]); });
     s.ent.capacite = Object.assign({}, D.ENTREPRISE.capacite, s.ent.capacite || {});
     s.ent.productivite = s.ent.productivite || {};
-    s.externes = s.externes || { lots: [] }; s.externes.lots = s.externes.lots || []; s.aoMemo = s.aoMemo || {};
+    s.externes = s.externes || { lots: [] }; s.externes.lots = s.externes.lots || []; s.aoMemo = s.aoMemo || {}; if (!s.guide) s.guide = { vu: (s.projects || []).some(function (p) { return !/exemple/i.test((p.info && p.info.nom) || ""); }) };
     s.appr = s.appr || { journal: [], ignore: {} }; s.appr.journal = s.appr.journal || []; s.appr.ignore = s.appr.ignore || {};
     s.sauvegarde = s.sauvegarde || {};
     s.sync = s.sync || {}; s.sync.hash = s.sync.hash || {}; s.sync.remoteAt = s.sync.remoteAt || {}; s.sync.supprimes = s.sync.supprimes || []; s.sync.file = s.sync.file || [];
@@ -1682,7 +1727,7 @@ var APP = (function () {
     if (o.check) return '<input type="checkbox" data-b="' + b + '"' + (v ? " checked" : "") + ">";
     if (o.options) return '<select data-b="' + b + '">' + o.options.map(function (x) { var val = Array.isArray(x) ? x[0] : x, lab = Array.isArray(x) ? x[1] : x; return '<option value="' + esc(val) + '"' + (String(val) === String(v) ? " selected" : "") + ">" + esc(lab) + "</option>"; }).join("") + "</select>";
     if (o.area) return '<textarea data-b="' + b + '" rows="' + (o.rows || 4) + '">' + esc(v) + "</textarea>";
-    return '<input ' + (o.text ? 'type="text"' : o.date ? 'type="date"' : 'type="number" step="any"') + ' data-b="' + b + '" value="' + esc(v == null ? "" : v) + '"' + (o.w ? ' style="width:' + o.w + '"' : "") + (o.ph ? ' placeholder="' + esc(o.ph) + '"' : "") + ">";
+    return '<input ' + (o.text ? 'type="text"' : o.date ? 'type="date"' : 'type="number" step="any"') + ' data-b="' + b + '" value="' + esc(v == null ? "" : v) + '"' + (o.cls ? ' class="' + o.cls + '"' : "") + (o.w ? ' style="width:' + o.w + '"' : "") + (o.ph ? ' placeholder="' + esc(o.ph) + '"' : "") + ">";
   }
   function fld(label, path, o, help) { return '<label class="f"><span>' + label + (help ? ' <i class="hl" title="' + esc(help) + '">?</i>' : "") + "</span>" + inp(path, o) + "</label>"; }
   function bindAll(root) {
@@ -1732,6 +1777,8 @@ var APP = (function () {
     c.innerHTML = f();
     bindAll(c);
     if (POST[ui.page]) POST[ui.page]();
+    if (window.GUIDE) GUIDE.apresRendu(ui.page);
+    if (window.HEBDO) HEBDO.apresRendu(ui.page);
   }
 
   /* ================= PAGES ================= */
@@ -1745,10 +1792,12 @@ var APP = (function () {
     var marge = q.ht - q.ds;
     var maxPh = Math.max.apply(null, q.phases.map(function (x) { return x.total; }).concat([1]));
     var h = '<div class="head"><h1>Tableau de bord</h1><p>Projet actif : <b>' + esc(p.info.nom) + "</b> · " + esc(p.info.client || "client non renseigné") + " · " + esc(p.info.ville || p.info.region) + "</p></div>";
+    if (window.GUIDE) h += GUIDE.dashHTML();
+    if (window.HEBDO) h += HEBDO.dashHTML();
     if (window.PIL) h += PIL.dashHTML();
     if (window.COMPTA) h += COMPTA.alertesHTML();
     if (window.OUT) h += OUT.entrepriseHTML();
-    if (S.demo) h += '<div class="note">Le projet « Villa R+1 – exemple » est <b>fictif</b>, avec des prix <b>indicatifs</b>. Créez votre projet dans <a href="#" data-go="projets">Projets</a> et mettez vos prix réels dans <a href="#" data-go="prix:biblio">Études de prix › Bibliothèque</a>.</div>';
+    if (S.demo) h += '<div class="note">Le projet « Villa R+1 – exemple » est <b>fictif</b>, avec des prix <b>indicatifs</b>. Créez votre projet dans <a href="#" data-go="projets">Projets</a> et mettez vos prix réels dans <a href="#" data-go="prix:biblio">Études de prix › Bibliothèque</a>.' + (S.projects.some(function (x) { return /exemple/i.test(x.info.nom); }) ? ' <button class="btn sm danger" id="gSupEx" style="margin-left:6px">Supprimer le projet exemple</button>' : "") + "</div>";
     h += '<div class="kpis">' + kpi("Montant TTC", fmt(q.ttc), "FCFA · HT " + fmt(q.ht)) + kpi("Coût au m²", fmt(q.surface ? q.ttc / q.surface : 0), "FCFA TTC / m² de plancher (" + fmt(q.surface) + " m²)") +
       kpi("Déboursé sec", fmt(q.ds), "FCFA · coefficient K = " + q.k.toFixed(3)) + kpi("Marge brute prévue", fmt(marge), "FCFA · " + fmt(q.ht ? 100 * marge / q.ht : 0, 1) + " % du HT") +
       kpi("Ciment", fmt(b.total.CIM || 0, 1) + " t", fmt(Math.ceil((b.total.CIM || 0) * 20)) + " sacs") + kpi("Acier", fmt(acier / 1000, 2) + " t", fmt(q.surface ? acier / q.surface : 0, 1) + " kg/m²") +
@@ -2081,7 +2130,9 @@ var APP = (function () {
     var phases = ["Toutes"].concat(q.phases.map(function (x) { return x.nom; }).filter(function (n) { return b.parPhase[n]; }));
     if (phases.indexOf(ui.phase) < 0) ui.phase = "Toutes";
     var data = ui.phase === "Toutes" ? b.total : b.parPhase[ui.phase] || {};
-    var h = '<div class="head"><h1>Approvisionnements</h1><p>Besoins en matériaux calculés à partir des sous-détails (pertes comprises), convertis en unités d\'achat : sacs, barres, camions.</p></div>';
+    var h = '<div class="head"><h1>Approvisionnements</h1><p>Besoins en matériaux, bons de commande aux fournisseurs, stock du chantier et matériel.</p></div>';
+    ui.sub.appro = ui.sub.appro || "besoins";
+    if (window.CHT) { h += tabs("appro", CHT.TABS_APPRO); if (ui.sub.appro !== "besoins") return h + CHT.pageAppro(ui.sub.appro); }
     h += '<div class="bar-btn"><label>Phase : <select id="phSel">' + phases.map(function (x) { return "<option" + (x === ui.phase ? " selected" : "") + ">" + esc(x) + "</option>"; }).join("") + '</select></label><button class="btn p" id="pdfBC">Générer le bon de commande (PDF)</button></div>';
     var tot = 0, rows = Object.keys(data).filter(function (k) { return data[k] > 0.0001; }).sort(function (a, c) { return data[c] * cat.res[c].p - data[a] * cat.res[a].p; });
     h += '<div class="card"><table class="t"><tr><th class="l">Matériau</th><th>Quantité</th><th class="l">En unités d\'achat</th><th>P.U. estimé</th><th>Montant estimé</th></tr>';
@@ -2091,7 +2142,7 @@ var APP = (function () {
     h += '<div class="card"><h2>Main-d\'œuvre totale du projet (journées)</h2><table class="t"><tr><th class="l">Métier</th><th>Journées</th><th>Coût estimé</th></tr>' + Object.keys(b.mo).map(function (k) { return '<tr><td class="l">' + esc(cat.res[k].d) + "</td><td>" + fmt(b.mo[k]) + "</td><td>" + fmt(b.mo[k] * cat.res[k].p) + "</td></tr>"; }).join("") + "</table><p class='hint'>Ces journées servent à calculer les durées du planning (cadences apprises comprises).</p></div>";
     return h;
   };
-  POST.appro = function () { $("phSel").onchange = function () { ui.phase = this.value; renderPage(); }; $("pdfBC").onclick = function () { PDF.commande(ui.phase); }; };
+  POST.appro = function () { bindTabs("appro"); if (window.CHT && ui.sub.appro !== "besoins") return CHT.postAppro(ui.sub.appro); $("phSel").onchange = function () { ui.phase = this.value; renderPage(); }; $("pdfBC").onclick = function () { PDF.commande(ui.phase); }; };
 
   /* ---- Paramètres ---- */
   PAGES.params = function () {
@@ -2116,7 +2167,7 @@ var APP = (function () {
     h += '<div class="card"><h2>Effectif disponible de l\'entreprise (tous chantiers)</h2><div class="form">' + Object.keys(PLAN.CAPACITE).map(function (k) { return fld(PLAN.LIB[k].charAt(0).toUpperCase() + PLAN.LIB[k].slice(1), "capacite." + k, e); }).join("") +
       '</div><p class="hint">Le moteur d\'anticipation compare ces effectifs aux besoins de tous les chantiers en cours, jour par jour, et vous prévient des surcharges.</p></div>';
     h += '<div class="card"><h2>Version de l\'application</h2><p>' + VERSION + (location.protocol === "file:" ? ' — <b>fichier local</b> : il ne se met pas à jour tout seul. Utilisez l\'adresse en ligne de l\'application pour recevoir les mises à jour automatiquement.' : " — mises à jour automatiques activées (dès qu'il y a internet).") + "</p></div>";
-    h += (window.COMPTA ? COMPTA.regimeHTML() : "") + (window.OUT ? OUT.entrepriseSigHTML() : "") + (window.SYNC ? SYNC.paramsHTML() : "") + (window.PIL ? PIL.sauvegardeHTML() : "");
+    h += (window.COMPTA ? COMPTA.regimeHTML() : "") + (window.OUT ? OUT.entrepriseSigHTML() : "") + (window.SYNC ? SYNC.paramsHTML() : "") + (window.HEBDO ? HEBDO.paramsHTML() : "") + (window.PIL ? PIL.sauvegardeHTML() : "");
     return h;
   };
   function updateK() { var e = $("kVal"); if (e) e.textContent = C.K(S.ent).toFixed(3); }
@@ -2484,7 +2535,7 @@ var MOD = (function () {
     d0 = PL.addDays(d0, -3); d1 = PL.addDays(d1, 10);
     var nj = PL.diff(d0, d1) + 1, px = Math.max(2.5, Math.min(14, 820 / nj)), L = 270, rh = 24, W = L + nj * px + 10, H = 34 + T.length * rh + 8;
     var X0 = function (s) { return L + PL.diff(d0, s) * px; };
-    var s = '<svg class="gantt" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + " " + H + '">';
+    var s = '<svg class="gantt" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + " " + H + '"><defs><marker id="fl" viewBox="0 0 6 6" refX="5" refY="3" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#8a94a8"/></marker><marker id="flc" viewBox="0 0 6 6" refX="5" refY="3" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#c23b3b"/></marker></defs>';
     // hivernage + mois
     var d = d0;
     while (d <= d1) {
@@ -2506,6 +2557,17 @@ var MOD = (function () {
       if (t.pct) s += '<rect x="' + bx + '" y="' + (y + 2) + '" width="' + bw * t.pct / 100 + '" height="12" rx="2" class="done"/>';
       if (t.pa) s += '<text x="' + (bx + bw + 3) + '" y="' + (y + 12) + '" class="pa">◆</text>';
     });
+    if (opts.liens) {
+      var pos = {}, chn = {}; T.forEach(function (t, i) { pos[t.id] = i; }); (opts.chaine || []).forEach(function (id, i, a) { if (i) chn[a[i - 1] + ">" + id] = 1; });
+      T.forEach(function (t, i) {
+        (t.deps || []).forEach(function (dp) {
+          var j = pos[dp[0]]; if (j == null) return; var pr = T[j];
+          var x1 = X0(opts.prev ? pr.pFin : pr.fin) + px, y1 = 30 + j * rh + 8, x2 = X0(opts.prev ? t.pDebut : t.debut), y2 = 30 + i * rh + 8, c = chn[pr.id + ">" + t.id];
+          var xm = Math.max(x1 + 4, Math.min(x2 - 4, x1 + 10)), dPath = x2 - 6 >= x1 ? "M" + x1 + "," + y1 + " H" + xm + " V" + y2 + " H" + (x2 - 1) : "M" + x1 + "," + y1 + " h4 V" + (y2 - 10) + " H" + (x2 - 8) + " V" + y2 + " H" + (x2 - 1);
+          s += '<path d="' + dPath + '" class="lien' + (c ? " crit" : "") + '" marker-end="url(#' + (c ? "flc" : "fl") + ')"/>';
+        });
+      });
+    }
     var tj = jour();
     if (tj >= d0 && tj <= d1) s += '<line x1="' + X0(tj) + '" x2="' + X0(tj) + '" y1="18" y2="' + H + '" class="today"/><text x="' + (X0(tj) + 3) + '" y="27" class="tdl">aujourd\'hui</text>';
     if (opts.livraison) s += '<line x1="' + X0(opts.livraison) + '" x2="' + X0(opts.livraison) + '" y1="18" y2="' + H + '" class="livr"/><text x="' + (X0(opts.livraison) - 3) + '" y="27" text-anchor="end" class="lvl">livraison promise</text>';
@@ -2523,16 +2585,41 @@ var MOD = (function () {
       fld("Prendre en compte l'hivernage", "planning.hivernage", { check: true }, "De juillet à octobre, la productivité des travaux extérieurs est réduite.") + fld("Productivité en hivernage (0 à 1)", "planning.facteurHiv", {}, "0,75 = les travaux extérieurs avancent à 75 % de la normale.") + "</div>" +
       '<h2 style="margin-top:14px">Effectif affecté à ce chantier (par métier)</h2><div class="form">' + Object.keys(PL.EQUIPES).filter(function (k) { return k !== "CHEF"; }).map(function (k) { return fld(LIBM[k], "planning.equipes." + k); }).join("") + "</div></div>";
     h += '<div class="bar-btn"><button class="btn p" id="pdfGantt">Générer le PDF du planning</button><button class="btn" id="figer">' + (p.planning.ref ? "Mettre à jour le planning de référence" : "Figer comme planning de référence") + '</button><button class="btn" id="rstPl">Effacer les ajustements manuels</button>' + (p.planning.ref ? '<span class="hint">Référence figée : l\'OPC mesure les retards par rapport à elle.</span>' : "") + "</div>";
-    h += '<div class="card"><h2>Diagramme de Gantt</h2><div class="legend"><i class="lg bar"></i>tâche <i class="lg crit"></i>critique <i class="lg hiv"></i>hivernage <span class="pa">◆</span> point d\'arrêt qualité</div>' + gantt(T, { livraison: liv }) + "</div>";
-    h += '<div class="card"><h2>Tâches</h2><table class="t edit"><tr><th class="l">Tâche</th><th class="l">Métier principal</th><th>Journées</th><th>Durée calculée</th><th>Durée ajustée</th><th>Début imposé</th><th>Début</th><th>Fin</th><th>Marge</th></tr>';
+    h += cheminCritiqueHTML(p, r, pl);
+    var gOpt = X.ui.gantt = X.ui.gantt || { liens: true, crit: false }, TG = gOpt.crit ? T.filter(function (t) { return t.critique; }) : T;
+    h += '<div class="card"><h2>Diagramme de Gantt</h2><div class="legend"><i class="lg bar"></i>tâche <i class="lg crit"></i>critique <i class="lg hiv"></i>hivernage <span class="pa">◆</span> point d\'arrêt qualité <span style="margin-left:14px"><label><input type="checkbox" id="gLiens"' + (gOpt.liens ? " checked" : "") + '> liaisons entre tâches</label> <label style="margin-left:10px"><input type="checkbox" id="gCrit"' + (gOpt.crit ? " checked" : "") + "> seulement le chemin critique</label></span></div>" + gantt(TG, { livraison: liv, liens: gOpt.liens, chaine: pl.chaine }) + "</div>";
+    h += '<div class="card"><h2>Tâches</h2><table class="t edit"><tr><th class="l">Tâche</th><th class="l">Métier principal</th><th>Journées</th><th>Durée calculée</th><th>Durée ajustée</th><th>Début imposé</th><th>Début</th><th>Fin</th><th title="Retard possible sans décaler la livraison">Marge totale</th><th title="Retard possible sans décaler la tâche suivante">Marge libre</th></tr>';
     T.forEach(function (t) {
       var j = Object.keys(t.mo).reduce(function (s, k) { return s + t.mo[k]; }, 0), ov = p.planning.ov[t.id] || {};
-      h += '<tr class="' + (t.critique ? "critrow" : "") + '"><td class="l">' + esc(t.nom) + (t.conflit ? " " + X.esc("") + '<span class="badge rouge">conflit</span>' : "") + '</td><td class="l small">' + (t.metier ? LIBM[t.metier] + " × " + t.equipe : "—") + "</td><td>" + fmt(j) + "</td><td>" + t.durCalc + ' j</td><td><input type="number" min="1" data-pov="' + t.id + '|dur" value="' + (ov.dur || "") + '" placeholder="' + t.durCalc + '"></td><td><input type="date" data-pov="' + t.id + '|debut" value="' + (ov.debut || "") + '"></td><td>' + fr(t.debut) + "</td><td>" + fr(t.fin) + "</td><td>" + (t.critique ? badge("rouge", "critique") : t.marge + " j") + "</td></tr>";
+      h += '<tr class="' + (t.critique ? "critrow" : "") + '"><td class="l">' + esc(t.nom) + (t.conflit ? " " + X.esc("") + '<span class="badge rouge">conflit</span>' : "") + '</td><td class="l small">' + (t.metier ? LIBM[t.metier] + " × " + t.equipe : "—") + "</td><td>" + fmt(j) + "</td><td>" + t.durCalc + ' j</td><td><input type="number" min="1" data-pov="' + t.id + '|dur" value="' + (ov.dur || "") + '" placeholder="' + t.durCalc + '"></td><td><input type="date" data-pov="' + t.id + '|debut" value="' + (ov.debut || "") + '"></td><td>' + fr(t.debut) + "</td><td>" + fr(t.fin) + "</td><td>" + (t.critique ? badge("rouge", "critique") : t.marge + " j") + "</td><td>" + (t.critique ? "—" : t.margeLibre + " j") + "</td></tr>";
     });
-    return h + '</table><p class="hint">Durée ajustée : remplace la durée calculée. Début imposé : force la date de début. Si elle ne respecte pas les enchaînements (cure, séchage, tâches précédentes), le conflit est signalé ici et dans l\'OPC.</p></div>';
+    return h + '</table><p class="hint">Marges en jours ouvrés. Marge totale : retard possible sur la tâche sans décaler la livraison. Marge libre : retard possible sans gêner la tâche suivante. Durée ajustée : remplace la durée calculée. Début imposé : force la date de début. Si elle ne respecte pas les enchaînements (cure, séchage, tâches précédentes), le conflit est signalé ici et dans l\'OPC.</p></div>';
+  }
+  function cheminCritiqueHTML(p, r, pl) {
+    var idx = {}; pl.taches.forEach(function (t) { idx[t.id] = t; });
+    var ch = pl.chaine.map(function (id) { return idx[id]; }).filter(Boolean), tot = ch.reduce(function (a, t) { return a + t.dur; }, 0);
+    var chip = function (t, extra) { return '<span style="display:inline-block;margin:3px 0;padding:4px 8px;border-radius:6px;background:#fbe9e9;border:1px solid #e6b3b3;font-size:12.5px"><b>' + esc(t.nom) + "</b> · " + t.dur + " j" + (extra || "") + "</span>"; };
+    var h = '<div class="card"><h2>Chemin critique</h2><p class="hint">Suite de tâches sans aucune marge : chacune pilote la date de fin. <b>Un jour de retard sur l\'une d\'elles, c\'est un jour de retard sur la livraison</b>, sauf si vous rattrapez ailleurs sur ce même chemin. C\'est là que vous mettez vos meilleures équipes et que vous anticipez les commandes.</p>' +
+      '<div style="line-height:2">' + ch.map(function (t) { return chip(t); }).join(' <span style="color:#c23b3b">➜</span> ') + "</div>" +
+      '<p class="hint">' + ch.length + " tâches critiques sur " + pl.taches.length + ", soit " + tot + " jours ouvrés de travail enchaînés (les délais de cure et de séchage s\'y ajoutent).</p>";
+    if (p.statut === "chantier" && r.F && r.F.taches.some(function (t) { return t.pct > 0; })) {
+      var reel = PL.critiqueReel(r.F), idf = {}; r.F.taches.forEach(function (t) { idf[t.id] = t; });
+      var diffCh = reel.join(">") !== pl.chaine.filter(function (id) { return idf[id] && idf[id].pct < 100; }).join(">");
+      h += '<h3 style="margin:12px 0 4px">Chemin critique actuel (d\'après l\'avancement réel)</h3>' + (reel.length ? '<div style="line-height:2">' + reel.map(function (id) { var t = idf[id]; return chip(t, t.pct ? " · " + Math.round(t.pct) + " % fait" : ""); }).join(' <span style="color:#c23b3b">➜</span> ') + "</div>" : '<p class="hint">Toutes les tâches sont terminées.</p>') + (diffCh ? '<div class="note">Le chemin critique a changé depuis le planning de départ : certaines tâches prises en retard sont devenues critiques. Concentrez vos efforts sur celles-ci.</div>' : "");
+    }
+    var marges = pl.taches.filter(function (t) { return !t.critique; }).sort(function (a, b) { return b.marge - a.marge; }).slice(0, 6);
+    if (marges.length) h += '<h3 style="margin:12px 0 4px">Tâches qui ont de la marge (vous pouvez les décaler ou y prendre des ouvriers)</h3><table class="t"><tr><th class="l">Tâche</th><th>Marge totale</th><th>Marge libre</th></tr>' + marges.map(function (t) { return '<tr><td class="l">' + esc(t.nom) + "</td><td>" + t.marge + " j</td><td>" + t.margeLibre + " j</td></tr>"; }).join("") + "</table>";
+    var sim = X.ui.sim || {};
+    h += '<h3 style="margin:14px 0 4px">Et si… une tâche prend du retard ?</h3><div class="bar-btn"><select id="simT">' + pl.taches.map(function (t) { return '<option value="' + t.id + '"' + (sim.id === t.id ? " selected" : "") + ">" + esc(t.nom) + (t.critique ? " (critique)" : " (marge " + t.marge + " j)") + "</option>"; }).join("") + '</select><label>retard de <input type="number" id="simJ" min="1" value="' + (sim.j || 5) + '" style="width:60px"> jours ouvrés</label><button class="btn p" id="simGo">Calculer l\'impact</button></div>';
+    if (sim.res) { var s = sim.res; h += s.decalage > 0 ? '<div class="note rouge">La livraison passerait du <b>' + fr(s.finAvant) + "</b> au <b>" + fr(s.finApres) + "</b> : <b>" + s.decalage + " jours ouvrés de retard</b> (" + s.calendaire + " jours calendaires). Prévoyez un renfort d\'équipe ou une autre organisation pour cette tâche.</div>" : '<div class="note" style="background:#e8f5ee;border-color:#9bd3b5">Aucun impact sur la livraison (' + fr(s.finAvant) + ") : ce retard est absorbé par la marge de la tâche (" + s.marge + " jours ouvrés).</div>"; }
+    return h + "</div>";
   }
   function postPlanning() {
     var p = P();
+    var g = X.ui.gantt = X.ui.gantt || { liens: true, crit: false }, b;
+    if ((b = $("gLiens"))) b.onchange = function () { g.liens = this.checked; X.renderPage(); };
+    if ((b = $("gCrit"))) b.onchange = function () { g.crit = this.checked; X.renderPage(); };
+    if ((b = $("simGo"))) b.onclick = function () { var id = $("simT").value, j = Math.max(1, +$("simJ").value || 1); X.ui.sim = { id: id, j: j, res: PL.simulerRetard(p, Cc.dqe(p, X.ST()), id, j) }; X.renderPage(); };
     document.querySelectorAll("[data-pov]").forEach(function (el) {
       el.onchange = function () { var a = el.dataset.pov.split("|"); var o = p.planning.ov[a[0]] = p.planning.ov[a[0]] || {}; if (el.value === "") delete o[a[1]]; else o[a[1]] = a[1] === "dur" ? +el.value : el.value; X.save(); X.renderPage(); };
     });
@@ -2634,15 +2721,16 @@ var MOD = (function () {
     var cmd = [];
     r.F.taches.forEach(function (t) { if (t.pct === 0 && t.appro) t.appro.forEach(function (c) { cmd.push({ cle: t.id + "|" + c, cat: c, t: t, avant: PL.addDays(t.pDebut, -(PL.APPRO[c] || 7) - 2) }); }); });
     cmd.sort(function (a, b) { return a.avant < b.avant ? -1 : 1; });
-    h += '<div class="card"><h2>Commandes à passer</h2><table class="t"><tr><th class="l">Fourniture</th><th class="l">Pour la tâche</th><th>Délai</th><th>Commander avant le</th><th>Commandé</th></tr>' + cmd.map(function (c) {
+    h += '<div class="card"><h2>Commandes à passer</h2><table class="t"><tr><th class="l">Fourniture</th><th class="l">Pour la tâche</th><th>Délai</th><th>Commander avant le</th><th>Commandé</th>' + (window.CHT ? "<th></th>" : "") + "</tr>" + cmd.map(function (c) {
       var fait = p.opc.commandes[c.cle], k = PL.diff(j, c.avant);
-      return "<tr><td class='l'>" + esc(c.cat) + "</td><td class='l small'>" + esc(c.t.nom) + "</td><td>" + (PL.APPRO[c.cat] || 7) + " j</td><td>" + fr(c.avant) + " " + (fait ? "" : k < 0 ? badge("rouge", "en retard") : k <= 10 ? badge("orange", "dans " + k + " j") : "") + '</td><td><input type="checkbox" data-cmd="' + c.cle + '"' + (fait ? " checked" : "") + "></td></tr>";
+      return "<tr><td class='l'>" + esc(c.cat) + "</td><td class='l small'>" + esc(c.t.nom) + "</td><td>" + (PL.APPRO[c.cat] || 7) + " j</td><td>" + fr(c.avant) + " " + (fait ? "" : k < 0 ? badge("rouge", "en retard") : k <= 10 ? badge("orange", "dans " + k + " j") : "") + '</td><td><input type="checkbox" data-cmd="' + c.cle + '"' + (fait ? " checked" : "") + "></td>" + (window.CHT ? '<td><button class="btn sm" data-nbc="' + esc(c.cat) + '" data-nbt="' + esc(c.t.nom) + '" data-nbl="' + PL.addDays(c.t.pDebut, -2) + '">Bon de commande</button></td>' : "") + "</tr>";
     }).join("") + "</table></div>";
     return h;
   }
   function postGlis() {
     var p = P();
     document.querySelectorAll("[data-lk]").forEach(function (el) { el.onchange = function () { var a = el.dataset.lk.split("|"); p.opc.lookahead[a[0]] = p.opc.lookahead[a[0]] || {}; p.opc.lookahead[a[0]][a[1]] = el.checked; X.save(); }; });
+    document.querySelectorAll("[data-nbc]").forEach(function (b) { b.onclick = function () { p.opc.commandes[b.closest("tr").querySelector("[data-cmd]").dataset.cmd] = jour(); X.save(); CHT.nouveauBon(b.dataset.nbc, b.dataset.nbt, b.dataset.nbl); }; });
     document.querySelectorAll("[data-cmd]").forEach(function (el) { el.onchange = function () { if (el.checked) p.opc.commandes[el.dataset.cmd] = jour(); else delete p.opc.commandes[el.dataset.cmd]; X.save(); X.renderPage(); }; });
     var b = $("pdfGlis"); if (b) b.onclick = pdfGlissant;
   }
@@ -2716,8 +2804,9 @@ var MOD = (function () {
   }
   function pageTerrain() {
     var h = '<div class="head"><h1>Suivi terrain</h1><p>Vos collaborateurs remplissent ici le rapport de chantier, sur téléphone, même sans réseau, puis l\'envoient au bureau par WhatsApp. Au bureau, vous importez les rapports et tout se met à jour : avancement, alertes, consommations, comptes rendus.</p></div>';
-    h += (X.ui.sub.terrain = X.ui.sub.terrain || "rap", "") + X.tabs("terrain", [["rap", "Nouveau rapport"], ["hist", "Rapports reçus"], ["ech", "Échanges bureau ↔ chantier"]]);
+    h += (X.ui.sub.terrain = X.ui.sub.terrain || "rap", "") + X.tabs("terrain", [["rap", "Nouveau rapport"], ["hist", "Rapports reçus"], ["ech", "Échanges bureau ↔ chantier"]].concat(window.CHT ? [["plans", "Plans et réserves"]] : []));
     var sub = X.ui.sub.terrain || "rap";
+    if (sub === "plans" && window.CHT) return h + CHT.plansHTML();
     return h + ({ rap: terRapport, hist: terHist, ech: terEch }[sub] || terRapport)();
   }
   function terRapport() {
@@ -2808,7 +2897,7 @@ var MOD = (function () {
   function postTerrain() {
     if (!X.ui.sub.terrain) X.ui.sub.terrain = "rap";
     X.bindTabs("terrain");
-    var s = X.ui.sub.terrain; if (s === "rap") postRapport(); if (s === "hist") postHist(); if (s === "ech") postEch();
+    var s = X.ui.sub.terrain; if (s === "plans" && window.CHT) return CHT.postPlans(); if (s === "rap") postRapport(); if (s === "hist") postHist(); if (s === "ech") postEch();
     chargerVignettes();
   }
 
@@ -2831,10 +2920,11 @@ var MOD = (function () {
   }
   function pageFactu() {
     var h = '<div class="head"><h1>Finances et comptabilité</h1><p>Factures, situations de travaux, encaissements et dépenses du chantier, puis la comptabilité simplifiée de l\'entreprise : journal de caisse, frais généraux, TVA et résultat de l\'année expliqué simplement.</p></div>';
-    var onglets = [["docs", "Factures"], ["sit", "Nouvelle situation"], ["dep", "Dépenses du chantier"], ["treso", "Trésorerie prévisionnelle"]].concat(window.COMPTA ? COMPTA.TABS : []);
+    var onglets = [["docs", "Factures"], ["sit", "Nouvelle situation"], ["dep", "Dépenses du chantier"]].concat(window.CHT ? [["tach", "Tâcherons"]] : []).concat([["treso", "Trésorerie prévisionnelle"]]).concat(window.COMPTA ? COMPTA.TABS : []);
     h += (X.ui.sub.factu = X.ui.sub.factu || "docs", "") + X.tabs("factu", onglets);
     var sub = X.ui.sub.factu || "docs";
     if (window.COMPTA && COMPTA.TABS.some(function (t) { return t[0] === sub; })) return h + COMPTA.page(sub);
+    if (sub === "tach" && window.CHT) return h + CHT.tachHTML();
     return h + ({ docs: facDocs, sit: facSit, dep: facDep, treso: facTreso }[sub] || facDocs)();
   }
   function facDocs() {
@@ -2905,6 +2995,7 @@ var MOD = (function () {
     if (!X.ui.sub.factu) X.ui.sub.factu = "docs";
     X.bindTabs("factu");
     if (window.COMPTA && COMPTA.TABS.some(function (t) { return t[0] === X.ui.sub.factu; })) return COMPTA.post(X.ui.sub.factu);
+    if (X.ui.sub.factu === "tach" && window.CHT) return CHT.postTach();
     var p = P(), e = S().ent;
     var b;
     if ((b = $("figM"))) b.onclick = function () { figerMarche(p); X.save(); X.renderPage(); X.toast("Marché figé"); };
@@ -3029,6 +3120,17 @@ var MOD = (function () {
     if (p.info.dateLivraison) { doc.setDrawColor(178, 58, 58); doc.setLineWidth(0.4); doc.line(X0(p.info.dateLivraison), top - 6, X0(p.info.dateLivraison), yb); doc.setTextColor(178, 58, 58); doc.setFontSize(6.5); doc.text("Livraison promise", X0(p.info.dateLivraison) - 1, yb + 3, { align: "right" }); }
     if (prev) { doc.setDrawColor(27, 44, 92); doc.line(X0(jour()), top - 6, X0(jour()), yb); }
     doc.setTextColor(90, 90, 90); doc.setFontSize(7); doc.text(h.t("Barres rouges : tâches critiques · zone bleue : hivernage (productivité extérieure réduite)" + (prev ? " · trait foncé : avancement réalisé" : "")), L, Math.min(200, yb + 8));
+    // page « chemin critique »
+    var base = r.F.base, idx = {}; base.taches.forEach(function (t) { idx[t.id] = t; });
+    var chn = (prev ? PL.critiqueReel(r.F) : base.chaine).map(function (id) { return prev ? r.F.taches.filter(function (t) { return t.id === id; })[0] : idx[id]; }).filter(Boolean);
+    doc.addPage(); hdrL(doc, "CHEMIN CRITIQUE", sous);
+    doc.setFont("helvetica", "normal"); doc.setFontSize(9); doc.setTextColor(60, 60, 60);
+    doc.text(h.t("Tâches sans marge : un jour de retard sur l'une d'elles décale la livraison d'un jour. Marges exprimées en jours ouvrés."), 14, 38);
+    var tb = function (o) { doc.autoTable(Object.assign({ margin: { top: 36, bottom: 16, left: 14, right: 14 }, theme: "grid", styles: { font: "helvetica", fontSize: 7.5, cellPadding: 1.1, lineColor: [205, 210, 208], lineWidth: 0.15, textColor: [30, 30, 30] }, headStyles: { fillColor: [43, 74, 140], textColor: 255, fontStyle: "bold" }, didDrawPage: function (dd) { if (dd.pageNumber > 1 || doc.getNumberOfPages() > pg0) hdrL(doc, "CHEMIN CRITIQUE", sous); } }, o)); };
+    var pg0 = doc.getNumberOfPages();
+    tb({ startY: 42, head: [["N°", "Tâche critique", "Début", "Fin", "Durée (j ouvrés)", "Équipe"]], body: chn.map(function (t, i) { return [i + 1, h.t(t.nom), fr(prev ? t.pDebut : t.debut), fr(prev ? t.pFin : t.fin), t.dur, h.t(t.metier && LIBM[t.metier] ? t.equipe + " " + LIBM[t.metier].toLowerCase() : "-")]; }), headStyles: { fillColor: [178, 58, 58], textColor: 255, fontStyle: "bold" } });
+    var mg = base.taches.filter(function (t) { return !t.critique; });
+    if (mg.length) tb({ startY: doc.lastAutoTable.finalY + 6, head: [["Tâches avec marge", "Début", "Fin", "Marge totale (j)", "Marge libre (j)"]], body: mg.map(function (t) { return [h.t(t.nom), fr(t.debut), fr(t.fin), t.marge, t.margeLibre]; }) });
     footL(doc, titre); X.saveFile(doc.output("blob"), (prev ? "Planning_recale_" : "Planning_") + X.slug(p.info.nom) + ".pdf");
   }
   function hdrL(doc, titre, sous) {
@@ -4998,6 +5100,596 @@ var SYNC = (function () {
   return { init: init, estCollab: estCollab, estAdmin: estAdmin, synchroniser: synchroniser, apresEnregistrement: apresEnregistrement, rapportEnregistre: rapportEnregistre,
     paramsHTML: paramsHTML, postParams: postParams, partageHTML: partageHTML, postPartage: postPartage, pageClient: pageClient, pourCollab: pourCollab, vueClient: vueClient, _E: E };
 })();
+</script>
+<script>/* =========================================================================
+   TABAX – Gestion du chantier
+   · Tâcherons : contrat, avances, reste à payer, contrat PDF signé à l'écran
+     (chaque paiement devient une dépense du chantier → comptabilité, compte 621)
+   · Bons de commande fournisseurs (PDF / WhatsApp), réception → stock + dépense
+   · Stock du chantier : entrées (livraisons) – sorties (rapports terrain)
+   · Matériel et engins : propres ou loués, coût de location, pannes
+   · Plans du chantier avec réserves placées sur le plan
+   ========================================================================= */
+var CHT = (function () {
+  "use strict";
+  var X = APP.X, PL = PLAN, P = function () { return X.P(); }, S = function () { return X.S(); }, $ = function (id) { return document.getElementById(id); };
+  var esc = X.esc, fmt = X.fmt, inp = X.inp;
+  function n(v) { v = parseFloat(v); return isFinite(v) ? v : 0; }
+  function jour() { var d = new Date(); return d.getFullYear() + "-" + ("0" + (d.getMonth() + 1)).slice(-2) + "-" + ("0" + d.getDate()).slice(-2); }
+  function fr(d) { return d ? d.split("-").reverse().join("/") : "-"; }
+  function uid(p) { return (p || "i") + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
+  function lotNom(id) { var L = DATA.LOTS.filter(function (x) { return x[0] === id; })[0]; return L ? L[1] : ""; }
+  function lotSel(path, val) { return '<select data-b="' + path + '" style="max-width:170px"><option value="">— lot —</option>' + DATA.LOTS.map(function (L) { return '<option value="' + L[0] + '"' + (val === L[0] ? " selected" : "") + ">" + esc(L[1]) + "</option>"; }).join("") + "</select>"; }
+  function sel(path, val, opts, rr) { return '<select data-b="' + path + '"' + (rr ? ' class="rr"' : "") + ">" + opts.map(function (o) { return '<option value="' + o[0] + '"' + (val === o[0] ? " selected" : "") + ">" + esc(o[1]) + "</option>"; }).join("") + "</select>"; }
+  function badge(c, t) { return '<span class="badge ' + c + '">' + esc(t) + "</span>"; }
+  function ensure(p) {
+    p.tacherons = p.tacherons || []; p.bons = p.bons || []; p.materiel = p.materiel || []; p.plans = p.plans || [];
+    p.stock = p.stock || { mvts: [], seuils: {} }; p.stock.mvts = p.stock.mvts || []; p.stock.seuils = p.stock.seuils || {};
+    p.factu = p.factu || {}; p.factu.achats = p.factu.achats || []; p.opc = p.opc || {}; p.opc.reserves = p.opc.reserves || [];
+    return p;
+  }
+  function rerender() { document.querySelectorAll("#content [data-b].rr").forEach(function (el) { el.addEventListener("change", function () { setTimeout(X.renderPage, 0); }); }); }
+  function confirmer(b, txt, fn) { if (b.dataset.c !== "1") { b.dataset.c = "1"; b.textContent = txt; return; } fn(); }
+  function ajouterDepense(p, o) { p.factu.achats.push(Object.assign({ date: jour(), four: "", lib: "", lot: "", res: "", qte: "", mt: 0, delai: "" }, o)); }
+  function pdfH() { return APP._pdf().h; }
+
+  /* =======================================================================
+     TÂCHERONS
+     ======================================================================= */
+  function payeTach(p, id) { return p.factu.achats.filter(function (a) { return a.tach === id; }).reduce(function (s, a) { return s + n(a.mt); }, 0); }
+  function montantTach(t) { return t.mode === "unitaire" ? n(t.pu) * n(t.qte) : n(t.montant); }
+  function tachHTML() {
+    var p = ensure(P()), T = p.tacherons;
+    var tot = T.reduce(function (s, t) { return s + montantTach(t); }, 0), pay = T.reduce(function (s, t) { return s + payeTach(p, t.id); }, 0);
+    var h = '<div class="card"><h2>Tâcherons et sous-traitants du chantier</h2><p class="hint">Un contrat par tâcheron : prix convenu, avance, paiements au fur et à mesure du travail fait. Chaque paiement saisi ici devient une <b>dépense du chantier</b> (et passe en comptabilité, compte 621). Vous voyez d\'un coup d\'œil si vous avez payé plus que le travail réalisé.</p>' +
+      '<div class="kpis">' + X.kpi("Contrats", T.length, "tâcherons sur ce chantier") + X.kpi("Montant des contrats", fmt(tot), "FCFA") + X.kpi("Déjà payé", fmt(pay), "FCFA · " + fmt(tot ? 100 * pay / tot : 0) + " %") + X.kpi("Reste à payer", fmt(tot - pay), "FCFA") + "</div>" +
+      '<button class="btn p" id="tAdd">+ Nouveau contrat de tâcheron</button></div>';
+    T.forEach(function (t, i) {
+      var b = "tacherons." + i, m = montantTach(t), pa = payeTach(p, t.id), pctP = m ? 100 * pa / m : 0, av = n(t.avancement), trop = m > 0 && pctP > av + 5;
+      var pays = p.factu.achats.filter(function (a) { return a.tach === t.id; });
+      var sg = (p.signatures || {})["tach_" + t.id];
+      h += '<div class="card"><h2>' + esc(t.nom || "Tâcheron sans nom") + (t.metier ? ' <span style="font-weight:400;color:#667">· ' + esc(t.metier) + "</span>" : "") + " " + (m && pa >= m - 1 ? badge("vert", "soldé") : trop ? badge("rouge", "payé plus que le travail fait") : "") + "</h2>" +
+        '<div class="form">' +
+        '<label class="f"><span>Nom et prénom</span>' + inp(b + ".nom", { text: true }) + "</label>" +
+        '<label class="f"><span>Téléphone</span>' + inp(b + ".tel", { text: true }) + "</label>" +
+        '<label class="f"><span>N° pièce d\'identité (CNI)</span>' + inp(b + ".cni", { text: true }) + "</label>" +
+        '<label class="f"><span>Métier</span>' + inp(b + ".metier", { text: true, ph: "Maçon, ferrailleur, carreleur…" }) + "</label>" +
+        '<label class="f wide"><span>Travaux confiés</span>' + inp(b + ".objet", { text: true, ph: "Ex. maçonnerie en agglos de 15 du RDC et du R+1" }) + "</label>" +
+        '<label class="f"><span>Lot</span>' + lotSel(b + ".lot", t.lot) + "</label>" +
+        '<label class="f"><span>Mode de prix</span>' + sel(b + ".mode", t.mode || "forfait", [["forfait", "Forfait (prix global)"], ["unitaire", "Prix unitaire × quantité"]], true) + "</label>" +
+        (t.mode === "unitaire" ? '<label class="f"><span>Prix unitaire (FCFA)</span>' + inp(b + ".pu", { cls: "rr" }) + '</label><label class="f"><span>Quantité</span>' + inp(b + ".qte", { cls: "rr" }) + '</label><label class="f"><span>Unité</span>' + inp(b + ".unite", { text: true, ph: "m², ml, u…" }) + "</label>" : '<label class="f"><span>Montant du forfait (FCFA)</span>' + inp(b + ".montant", { cls: "rr" }) + "</label>") +
+        '<label class="f"><span>Début</span>' + inp(b + ".debut", { date: true }) + '</label><label class="f"><span>Fin prévue</span>' + inp(b + ".fin", { date: true }) + "</label>" +
+        '<label class="f"><span>Avance au démarrage (%)</span>' + inp(b + ".avancePct") + '</label><label class="f"><span>Retenue de garantie (%)</span>' + inp(b + ".retenue") + "</label>" +
+        '<label class="f"><span>Pénalité de retard (FCFA / jour)</span>' + inp(b + ".penalite") + "</label>" +
+        '<label class="f"><span>Avancement constaté (%)</span>' + inp(b + ".avancement", { cls: "rr" }) + "</label>" +
+        "</div>" +
+        '<div class="kpis">' + X.kpi("Montant du contrat", fmt(m), "FCFA" + (t.mode === "unitaire" ? " (" + fmt(t.qte) + " " + esc(t.unite || "u") + " × " + fmt(t.pu) + ")" : "")) + X.kpi("Payé", fmt(pa), "FCFA · " + fmt(pctP) + " % du contrat") + X.kpi("Travail fait", fmt(av) + " %", "soit " + fmt(m * av / 100) + " FCFA") + X.kpi("Reste à payer", fmt(m - pa), "FCFA") + "</div>" +
+        (trop ? '<div class="note rouge">Vous avez payé <b>' + fmt(pctP) + " %</b> du contrat pour <b>" + fmt(av) + " %</b> de travail fait : ne versez plus rien avant que le travail rattrape les paiements.</div>" : "") +
+        '<h3 style="margin:10px 0 4px">Paiements</h3>' + (pays.length ? '<table class="t"><tr><th>Date</th><th class="l">Libellé</th><th>Mode</th><th>Montant</th></tr>' + pays.map(function (a) { return "<tr><td>" + fr(a.date) + '</td><td class="l">' + esc(a.lib) + "</td><td>" + esc(a.mode || "—") + "</td><td>" + fmt(a.mt) + "</td></tr>"; }).join("") + "</table>" : '<p class="hint">Aucun paiement pour l\'instant.</p>') +
+        '<div class="bar-btn"><input type="number" min="0" placeholder="Montant (FCFA)" id="tMt' + i + '" style="width:150px"><select id="tMo' + i + '"><option>Espèces</option><option>Wave</option><option>Orange Money</option><option>Virement</option><option>Chèque</option></select><input id="tLi' + i + '" placeholder="' + (pays.length ? "Paiement selon avancement" : "Avance au démarrage") + '" style="width:220px"><button class="btn p" data-tpay="' + i + '">Enregistrer le paiement</button></div>' +
+        '<div style="margin-top:8px">' + (window.OUT ? OUT.signatureHTML("tach_" + t.id, "Signature du tâcheron sur le contrat") : "") + "</div>" +
+        '<div class="bar-btn"><button class="btn" data-tpdf="' + i + '">Contrat PDF' + (sg ? " (signé)" : "") + '</button><button class="btn" data-twa="' + i + '">Envoyer par WhatsApp</button><button class="btn danger" data-tdel="' + i + '">Supprimer ce contrat</button></div></div>';
+    });
+    return h;
+  }
+  function postTach() {
+    var p = ensure(P()); rerender(); if (window.OUT) OUT.lierSignatures();
+    $("tAdd").onclick = function () { p.tacherons.push({ id: uid("t"), nom: "", tel: "", metier: "", objet: "", lot: "", mode: "forfait", montant: 0, debut: jour(), fin: "", avancePct: 30, retenue: 5, penalite: 0, avancement: 0 }); X.save(); X.renderPage(); };
+    document.querySelectorAll("[data-tpay]").forEach(function (b) {
+      b.onclick = function () {
+        var i = +b.dataset.tpay, t = p.tacherons[i], mt = n($("tMt" + i).value); if (mt <= 0) return X.toast("Indiquez le montant payé");
+        var lib = ($("tLi" + i).value || "").trim() || (payeTach(p, t.id) ? "Paiement selon avancement" : "Avance au démarrage");
+        ajouterDepense(p, { four: t.nom, lib: "Tâcheron : " + lib + (t.objet ? " – " + t.objet : ""), lot: t.lot || "", mt: mt, mode: $("tMo" + i).value, tach: t.id });
+        X.save(); X.renderPage(); X.toast("Paiement enregistré dans les dépenses du chantier");
+      };
+    });
+    document.querySelectorAll("[data-tdel]").forEach(function (b) { b.onclick = function () { confirmer(b, "Confirmer (les paiements restent dans les dépenses)", function () { p.tacherons.splice(+b.dataset.tdel, 1); X.save(); X.renderPage(); }); }; });
+    document.querySelectorAll("[data-tpdf]").forEach(function (b) { b.onclick = function () { pdfContrat(+b.dataset.tpdf); }; });
+    document.querySelectorAll("[data-twa]").forEach(function (b) {
+      b.onclick = function () {
+        var t = p.tacherons[+b.dataset.twa], m = montantTach(t), pa = payeTach(p, t.id);
+        var msg = "Bonjour " + (t.nom || "") + ",\nVoici votre contrat pour le chantier « " + p.info.nom + " » : " + (t.objet || "") + ".\nMontant : " + fmt(m) + " FCFA. Déjà payé : " + fmt(pa) + " FCFA. Reste : " + fmt(m - pa) + " FCFA.\n" + S().ent.nom;
+        if (window.PIL) PIL.envoyer(function () { pdfContrat(+b.dataset.twa); }, t.tel, msg); else pdfContrat(+b.dataset.twa);
+      };
+    });
+  }
+  function pdfContrat(i) {
+    var h = pdfH(), p = ensure(P()), t = p.tacherons[i], e = S().ent, doc = h.doc0(), m = montantTach(t), titre = "CONTRAT DE TÂCHERONNAT", sous = p.info.nom;
+    h.header(doc, titre, sous); var y = 40;
+    var par = function (tit, txt) {
+      if (y > 255) { doc.addPage(); h.header(doc, titre, sous); y = 40; }
+      doc.setFont("helvetica", "bold"); doc.setFontSize(9.5); doc.text(h.t(tit), 14, y); y += 4.6;
+      doc.setFont("helvetica", "normal"); doc.setFontSize(9); var L = doc.splitTextToSize(h.t(txt), 182); doc.text(L, 14, y); y += L.length * 4.2 + 3;
+    };
+    par("Entre les soussignés", "L'entreprise " + e.nom + (e.adresse ? ", " + e.adresse : "") + (e.ninea ? ", NINEA " + e.ninea : "") + (e.rccm ? ", RCCM " + e.rccm : "") + ", représentée par " + (e.responsable || "son gérant") + ", ci-après « l'Entreprise » ;\net " + (t.nom || "…") + (t.cni ? ", CNI n° " + t.cni : "") + (t.tel ? ", téléphone " + t.tel : "") + ", " + (t.metier ? t.metier.toLowerCase() : "tâcheron") + ", ci-après « le Tâcheron ».");
+    par("Article 1 – Objet", "L'Entreprise confie au Tâcheron, qui l'accepte, l'exécution des travaux suivants : " + (t.objet || "…") + (t.lot ? " (lot : " + lotNom(t.lot) + ")" : "") + ", sur le chantier « " + p.info.nom + " »" + (p.info.adresse || p.info.ville ? " situé " + [p.info.adresse, p.info.ville].filter(Boolean).join(", ") : "") + ".");
+    par("Article 2 – Prix", (t.mode === "unitaire" ? "Les travaux sont rémunérés au prix unitaire de " + fmt(t.pu) + " FCFA par " + (t.unite || "unité") + ", pour une quantité estimée de " + fmt(t.qte) + " " + (t.unite || "unités") + ", soit un montant estimé de " + fmt(m) + " FCFA. Le montant définitif sera calculé sur les quantités réellement exécutées et constatées contradictoirement." : "Les travaux sont rémunérés au forfait, pour un montant global de " + fmt(m) + " FCFA.") + " Ce prix comprend la main-d'œuvre et le petit outillage du Tâcheron. Les matériaux sont fournis par l'Entreprise, sauf accord écrit contraire.");
+    par("Article 3 – Délais", "Les travaux commencent le " + fr(t.debut) + (t.fin ? " et doivent être terminés au plus tard le " + fr(t.fin) : "") + ". Le Tâcheron suit le planning et les instructions du chef de chantier." + (n(t.penalite) ? " Tout jour de retard non justifié entraîne une pénalité de " + fmt(t.penalite) + " FCFA, retenue sur les paiements." : ""));
+    par("Article 4 – Paiements", (n(t.avancePct) ? "Une avance de " + fmt(t.avancePct) + " % (" + fmt(m * n(t.avancePct) / 100) + " FCFA) est versée au démarrage. " : "") + "Les paiements suivants sont faits selon l'avancement constaté par le chef de chantier, sans pouvoir dépasser la valeur du travail réalisé." + (n(t.retenue) ? " Une retenue de garantie de " + fmt(t.retenue) + " % est conservée jusqu'à la réception des travaux sans réserve." : "") + " Chaque paiement donne lieu à un reçu signé par le Tâcheron.");
+    par("Article 5 – Obligations du Tâcheron", "Exécuter les travaux selon les plans, les règles de l'art et les consignes reçues ; reprendre à ses frais tout ouvrage mal exécuté ; respecter les horaires, la propreté du chantier et les consignes de sécurité ; porter et faire porter à son équipe les équipements de protection (casque, chaussures, gants) ; signaler sans délai tout problème ou accident.");
+    par("Article 6 – Obligations de l'Entreprise", "Mettre à disposition les plans, les matériaux et l'accès au chantier en temps utile ; constater l'avancement et payer les sommes dues dans les conditions ci-dessus.");
+    par("Article 7 – Résiliation et litiges", "En cas de manquement grave, l'une ou l'autre partie peut résilier le contrat après mise en demeure restée sans effet pendant 3 jours ; le travail réellement exécuté est alors payé. Les parties recherchent d'abord un règlement à l'amiable ; à défaut, le litige est porté devant le tribunal compétent du lieu du chantier.");
+    var pays = p.factu.achats.filter(function (a) { return a.tach === t.id; });
+    if (pays.length) { y = h.table(doc, { startY: y + 1, head: [["Paiements déjà effectués", "Date", "Mode", "Montant (FCFA)"]], body: pays.map(function (a) { return [h.t(a.lib), fr(a.date), h.t(a.mode || "-"), h.f(a.mt)]; }).concat([[{ content: h.t("Reste à payer"), colSpan: 3, styles: { fontStyle: "bold" } }, { content: h.f(m - payeTach(p, t.id)), styles: { fontStyle: "bold" } }]]) }, titre, sous) + 6; }
+    if (y > 235) { doc.addPage(); h.header(doc, titre, sous); y = 40; }
+    doc.setFont("helvetica", "normal"); doc.setFontSize(9); doc.text(h.t("Fait en deux exemplaires, le " + fr(jour()) + "."), 14, y + 2); y += 8;
+    [["Pour l'Entreprise", e.responsable || e.nom], ["Le Tâcheron", t.nom || ""]].forEach(function (c, k) {
+      var x = 14 + k * 95; doc.setFont("helvetica", "bold"); doc.text(h.t(c[0]), x + 1, y); doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.text(h.t(c[1] + " (lu et approuvé, signature)"), x + 1, y + 4); doc.setFontSize(9);
+      doc.setDrawColor(180, 180, 180); doc.rect(x, y + 7, 87, 28);
+      if (window.OUT) { if (k === 0) OUT.signerPDF(doc, x, y + 7, 87, 28, e.signature, e.cachet); else OUT.signerPDF(doc, x, y + 7, 87, 28, ((p.signatures || {})["tach_" + t.id] || {}).img, null); }
+    });
+    h.footers(doc, titre); X.saveFile(doc.output("blob"), "Contrat_tacheron_" + X.slug(t.nom || "sans_nom") + ".pdf");
+  }
+
+  /* =======================================================================
+     STOCK, BONS DE COMMANDE, MATÉRIEL
+     ======================================================================= */
+  var STK = [["CIM", "Ciment", "sacs"], ["HA6", "Fer HA6", "kg"], ["HA8", "Fer HA8", "kg"], ["HA10", "Fer HA10", "kg"], ["HA12", "Fer HA12", "kg"], ["HA14", "Fer HA14", "kg"], ["HA16", "Fer HA16", "kg"], ["SAB", "Sable", "m³"], ["GRA", "Gravier", "m³"], ["AG15", "Agglos de 15", "u"], ["AG10", "Agglos de 10", "u"], ["AG20", "Agglos de 20", "u"], ["HOU16", "Hourdis", "u"], ["FIL", "Fil à ligaturer", "kg"], ["BOIS", "Bois de coffrage", "u"], ["CARR", "Carreaux", "m²"], ["PEINT", "Peinture", "kg"]];
+  var STKi = {}; STK.forEach(function (s) { STKi[s[0]] = s; });
+  function etatStock(p) {
+    var E = {}, Sx = {}, cons = PL.consommations(p), j = jour(), d14 = PL.addDays(j, -14), c14 = {};
+    p.stock.mvts.forEach(function (m) { var o = m.type === "sortie" ? Sx : E; o[m.res] = (o[m.res] || 0) + n(m.qte); });
+    ((p.suivi || {}).rapports || []).forEach(function (r) { if (r.date >= d14 && r.date <= j) Object.keys(r.mat || {}).forEach(function (k) { c14[k] = (c14[k] || 0) + n(r.mat[k]); }); });
+    return STK.map(function (s) {
+      var k = s[0], ent = E[k] || 0, sor = (Sx[k] || 0) + (cons[k] || 0), st = ent - sor, jr = (c14[k] || 0) / 14, seuil = n(p.stock.seuils[k]);
+      return { k: k, nom: s[1], u: s[2], ent: ent, sor: sor, stock: st, parJour: jr, jours: jr > 0 ? st / jr : null, seuil: seuil, alerte: (ent || sor) && (st < 0 || (seuil && st < seuil) || (jr > 0 && st / jr < 5)) };
+    }).filter(function (x) { return x.ent || x.sor || x.seuil; });
+  }
+  function stockHTML() {
+    var p = ensure(P()), E = etatStock(p), al = E.filter(function (x) { return x.alerte; });
+    var h = '<div class="card"><h2>Stock du chantier</h2><p class="hint">Entrées : livraisons des bons de commande et entrées saisies ici. Sorties : matériaux consommés déclarés dans les rapports terrain, plus les sorties saisies ici (casse, vol, transfert). TABAX vous prévient quand il reste moins de 5 jours de consommation.</p>';
+    if (al.length) h += '<div class="note rouge"><b>À recommander :</b> ' + al.map(function (x) { return esc(x.nom) + " (" + fmt(x.stock, 1) + " " + x.u + (x.jours != null ? ", ≈ " + fmt(Math.max(0, x.jours), 0) + " j" : "") + ")"; }).join(" · ") + "</div>";
+    h += E.length ? '<table class="t"><tr><th class="l">Matériau</th><th>Entrées</th><th>Sorties</th><th>En stock</th><th>Conso / jour (14 j)</th><th>Tient encore</th><th>Seuil d\'alerte</th></tr>' + E.map(function (x) { return '<tr><td class="l">' + esc(x.nom) + "</td><td>" + fmt(x.ent, 1) + "</td><td>" + fmt(x.sor, 1) + '</td><td class="' + (x.stock < 0 ? "neg" : "") + '"><b>' + fmt(x.stock, 1) + "</b> " + x.u + " " + (x.alerte ? badge("rouge", "bas") : "") + "</td><td>" + (x.parJour ? fmt(x.parJour, 1) : "—") + "</td><td>" + (x.jours != null ? fmt(Math.max(0, x.jours), 0) + " j" : "—") + '</td><td><input type="number" min="0" data-seuil="' + x.k + '" value="' + (x.seuil || "") + '" style="width:80px"></td></tr>'; }).join("") + "</table>" : '<p class="hint">Aucun mouvement pour l\'instant. Réceptionnez un bon de commande ou saisissez une entrée ci-dessous.</p>';
+    h += '<h3 style="margin:14px 0 4px">Saisir un mouvement</h3><div class="bar-btn"><select id="sTy"><option value="entree">Entrée (livraison, reste d\'un autre chantier)</option><option value="sortie">Sortie (casse, perte, transfert)</option></select><select id="sRes">' + STK.map(function (s) { return '<option value="' + s[0] + '">' + esc(s[1] + " (" + s[2] + ")") + "</option>"; }).join("") + '</select><input type="number" id="sQte" min="0" step="any" placeholder="Quantité" style="width:110px"><input id="sNote" placeholder="Note (facultatif)" style="width:200px"><button class="btn p" id="sAdd">Ajouter</button></div>';
+    var M = p.stock.mvts.slice().reverse().slice(0, 30);
+    if (M.length) h += '<table class="t"><tr><th>Date</th><th class="l">Mouvement</th><th>Quantité</th><th class="l">Origine</th><th></th></tr>' + M.map(function (m) { var s = STKi[m.res] || [m.res, m.res, ""], idx = p.stock.mvts.indexOf(m); return "<tr><td>" + fr(m.date) + '</td><td class="l">' + (m.type === "sortie" ? "Sortie" : "Entrée") + " · " + esc(s[1]) + "</td><td>" + fmt(m.qte, 1) + " " + s[2] + '</td><td class="l">' + esc(m.note || "") + '</td><td><button class="btn sm danger" data-sdel="' + idx + '">×</button></td></tr>'; }).join("") + "</table>";
+    return h + "</div>";
+  }
+  function postStock() {
+    var p = ensure(P());
+    $("sAdd").onclick = function () { var q = n($("sQte").value); if (q <= 0) return X.toast("Indiquez une quantité"); p.stock.mvts.push({ date: jour(), type: $("sTy").value, res: $("sRes").value, qte: q, note: $("sNote").value }); X.save(); X.renderPage(); };
+    document.querySelectorAll("[data-seuil]").forEach(function (el) { el.onchange = function () { p.stock.seuils[el.dataset.seuil] = n(el.value); X.save(); X.renderPage(); }; });
+    document.querySelectorAll("[data-sdel]").forEach(function (b) { b.onclick = function () { p.stock.mvts.splice(+b.dataset.sdel, 1); X.save(); X.renderPage(); }; });
+  }
+
+  // ---- Bons de commande
+  var CAT2RES = { "Fer à béton et ciment": ["CIM", "HA8", "HA10", "HA12", "FIL"], "Hourdis": ["HOU16"], "Carrelage et faïence": ["CARR"] };
+  function numBon() { var s = S(); s.bcNum = (s.bcNum || 0) + 1; return "BC-" + jour().slice(0, 4) + "-" + ("00" + s.bcNum).slice(-3); }
+  function dernierPU(res) { var pu = 0; S().projects.forEach(function (p) { (p.bons || []).forEach(function (b) { b.lignes.forEach(function (l) { if (l.res === res && n(l.pu)) pu = n(l.pu); }); }); }); return pu; }
+  function totalBon(b) { return b.lignes.reduce(function (s, l) { return s + n(l.qte) * n(l.pu); }, 0); }
+  function nouveauBon(cat, pour, livraison) {
+    var p = ensure(P()), R = CAT2RES[cat];
+    var lignes = R ? R.map(function (k) { return { res: k, des: STKi[k][1], u: STKi[k][2], qte: 0, pu: dernierPU(k) }; }) : [{ res: "", des: cat || "", u: "u", qte: 0, pu: 0 }];
+    p.bons.push({ num: numBon(), date: jour(), four: "", tel: "", livraison: livraison || PL.addDays(jour(), 3), pour: pour || "", statut: "brouillon", lignes: lignes, note: "" });
+    X.save(); X.ui.sub.appro = "bons"; X.go("appro", "bons"); X.toast("Bon de commande préparé : choisissez le fournisseur et les quantités");
+  }
+  function bonsHTML() {
+    var p = ensure(P()), B = p.bons, four = {};
+    S().projects.forEach(function (x) { (x.bons || []).forEach(function (b) { if (b.four) four[b.four] = b.tel || four[b.four] || ""; }); (x.factu && x.factu.achats || []).forEach(function (a) { if (a.four && !a.tach && !(a.four in four)) four[a.four] = ""; }); });
+    var h = '<datalist id="dlFour">' + Object.keys(four).map(function (f) { return '<option value="' + esc(f) + '">'; }).join("") + "</datalist>";
+    h += '<div class="card"><h2>Bons de commande</h2><p class="hint">Préparez le bon, envoyez-le au fournisseur en PDF ou par WhatsApp, puis cliquez « Livré » à la réception : les quantités entrent dans le stock et le montant dans les dépenses du chantier. Vous pouvez aussi créer un bon depuis OPC › Commandes à passer.</p><button class="btn p" id="bAdd">+ Nouveau bon de commande</button></div>';
+    B.slice().reverse().forEach(function (bn) {
+      var i = B.indexOf(bn), b = "bons." + i, tot = totalBon(bn), st = { brouillon: ["", "brouillon"], envoye: ["orange", "envoyé"], livre: ["vert", "livré le " + fr(bn.dateLivre)] }[bn.statut] || ["", bn.statut];
+      h += '<div class="card"><h2>' + esc(bn.num) + " " + (st[0] ? badge(st[0], st[1]) : '<span class="tag">' + st[1] + "</span>") + (bn.pour ? ' <span style="font-weight:400;color:#667;font-size:13px">pour : ' + esc(bn.pour) + "</span>" : "") + "</h2>" +
+        '<div class="form"><label class="f"><span>Fournisseur</span>' + inp(b + ".four", { text: true }).replace("<input", '<input list="dlFour"') + '</label><label class="f"><span>Téléphone (WhatsApp)</span>' + inp(b + ".tel", { text: true }) + '</label><label class="f"><span>Date de la commande</span>' + inp(b + ".date", { date: true }) + '</label><label class="f"><span>Livraison souhaitée le</span>' + inp(b + ".livraison", { date: true }) + "</label></div>" +
+        '<table class="t edit"><tr><th class="l">Désignation</th><th>Article suivi en stock</th><th>Unité</th><th>Quantité</th><th>Prix unitaire</th><th>Montant</th><th></th></tr>' + bn.lignes.map(function (l, k) {
+          var lb = b + ".lignes." + k;
+          return '<tr><td class="l">' + inp(lb + ".des", { text: true }) + '</td><td><select data-b="' + lb + '.res" class="rr"><option value="">— non suivi —</option>' + STK.map(function (s) { return '<option value="' + s[0] + '"' + (l.res === s[0] ? " selected" : "") + ">" + esc(s[1]) + "</option>"; }).join("") + "</select></td><td>" + inp(lb + ".u", { text: true, w: "60px" }) + "</td><td>" + inp(lb + ".qte", { w: "80px", cls: "rr" }) + "</td><td>" + inp(lb + ".pu", { w: "100px", cls: "rr" }) + "</td><td>" + fmt(n(l.qte) * n(l.pu)) + '</td><td><button class="btn sm danger" data-bl="' + i + "|" + k + '">×</button></td></tr>';
+        }).join("") + '<tr class="tot"><td colspan="5" class="l">Total</td><td>' + fmt(tot) + " FCFA</td><td></td></tr></table>" +
+        '<label class="f wide"><span>Remarques pour le fournisseur</span>' + inp(b + ".note", { text: true, ph: "Ex. livraison sur chantier avant 10 h, appeler le chef de chantier" }) + "</label>" +
+        '<div class="bar-btn"><button class="btn sm" data-bla="' + i + '">+ Ligne</button><button class="btn" data-bpdf="' + i + '">PDF</button><button class="btn" data-bwa="' + i + '">Envoyer par WhatsApp</button>' + (bn.statut !== "livre" ? '<button class="btn p" data-bliv="' + i + '">Livré : entrer en stock et en dépense</button>' : "") + '<button class="btn danger" data-bdel="' + i + '">Supprimer</button></div></div>';
+    });
+    return h;
+  }
+  function postBons() {
+    var p = ensure(P()); rerender();
+    $("bAdd").onclick = function () { nouveauBon("", ""); };
+    document.querySelectorAll("[data-bla]").forEach(function (b) { b.onclick = function () { p.bons[+b.dataset.bla].lignes.push({ res: "", des: "", u: "u", qte: 0, pu: 0 }); X.save(); X.renderPage(); }; });
+    document.querySelectorAll("[data-bl]").forEach(function (b) { b.onclick = function () { var a = b.dataset.bl.split("|"); p.bons[+a[0]].lignes.splice(+a[1], 1); X.save(); X.renderPage(); }; });
+    document.querySelectorAll("[data-bdel]").forEach(function (b) { b.onclick = function () { confirmer(b, "Confirmer la suppression", function () { p.bons.splice(+b.dataset.bdel, 1); X.save(); X.renderPage(); }); }; });
+    document.querySelectorAll("[data-bpdf]").forEach(function (b) { b.onclick = function () { var bn = p.bons[+b.dataset.bpdf]; pdfBon(bn); if (bn.statut === "brouillon") { bn.statut = "envoye"; X.save(); X.renderPage(); } }; });
+    document.querySelectorAll("[data-bwa]").forEach(function (b) {
+      b.onclick = function () {
+        var bn = p.bons[+b.dataset.bwa], e = S().ent;
+        var msg = "Bonjour" + (bn.four ? " " + bn.four : "") + ",\nVoici notre bon de commande " + bn.num + " pour le chantier « " + p.info.nom + " »" + (p.info.ville ? " (" + p.info.ville + ")" : "") + " :\n" + bn.lignes.filter(function (l) { return n(l.qte); }).map(function (l) { return "- " + l.des + " : " + fmt(l.qte) + " " + l.u; }).join("\n") + "\nLivraison souhaitée le " + fr(bn.livraison) + ".\nMerci de confirmer la disponibilité et le prix.\n" + e.nom + (e.tel ? " – " + e.tel : "");
+        if (window.PIL) PIL.envoyer(function () { pdfBon(bn); }, bn.tel, msg); else pdfBon(bn);
+        if (bn.statut === "brouillon") { bn.statut = "envoye"; X.save(); }
+      };
+    });
+    document.querySelectorAll("[data-bliv]").forEach(function (b) {
+      b.onclick = function () {
+        var bn = p.bons[+b.dataset.bliv];
+        confirmer(b, "Confirmer la livraison complète", function () {
+          bn.statut = "livre"; bn.dateLivre = jour();
+          bn.lignes.forEach(function (l) { if (l.res && n(l.qte)) p.stock.mvts.push({ date: jour(), type: "entree", res: l.res, qte: n(l.qte), note: "Livraison " + bn.num + (bn.four ? " – " + bn.four : "") }); });
+          var tot = totalBon(bn); if (tot > 0) ajouterDepense(p, { four: bn.four, lib: "Livraison " + bn.num + " : " + bn.lignes.filter(function (l) { return n(l.qte); }).map(function (l) { return l.des; }).join(", "), mt: tot, bc: bn.num });
+          X.save(); X.renderPage(); X.toast("Livraison enregistrée : stock et dépenses mis à jour");
+        });
+      };
+    });
+  }
+  function pdfBon(bn) {
+    var h = pdfH(), p = P(), e = S().ent, doc = h.doc0(), titre = "BON DE COMMANDE N° " + bn.num, sous = "Du " + fr(bn.date);
+    h.header(doc, titre, sous); var y = 40;
+    y = h.table(doc, { startY: y, theme: "plain", styles: { fontSize: 9.5, cellPadding: 1.4 }, columnStyles: { 0: { fontStyle: "bold", cellWidth: 52 } }, body: [["Fournisseur", bn.four || "-"], ["Chantier", p.info.nom], ["Lieu de livraison", [p.info.adresse, p.info.ville].filter(Boolean).join(", ") || "-"], ["Livraison souhaitée le", fr(bn.livraison)], ["Contact", (e.responsable ? e.responsable + " – " : "") + (e.tel || "")]].map(function (r) { return [h.t(r[0]), h.t(r[1])]; }) }, titre, sous) + 4;
+    var L = bn.lignes.filter(function (l) { return n(l.qte); });
+    y = h.table(doc, { startY: y, head: [["Désignation", "Unité", "Quantité", "Prix unitaire", "Montant (FCFA)"]], body: L.map(function (l) { return [h.t(l.des), h.t(l.u), h.f(l.qte), n(l.pu) ? h.f(l.pu) : "", n(l.pu) ? h.f(n(l.qte) * n(l.pu)) : ""]; }).concat(totalBon(bn) ? [[{ content: "Total", colSpan: 4, styles: { fontStyle: "bold" } }, { content: h.f(totalBon(bn)), styles: { fontStyle: "bold" } }]] : []), columnStyles: { 2: { halign: "right" }, 3: { halign: "right" }, 4: { halign: "right" } } }, titre, sous) + 6;
+    doc.setFont("helvetica", "normal"); doc.setFontSize(9);
+    var c = doc.splitTextToSize(h.t((bn.note ? bn.note + "\n" : "") + "La livraison est acceptée sur présentation d'un bon de livraison signé par notre représentant sur le chantier. La facture doit rappeler le numéro de ce bon de commande" + (e.ninea ? " et porter le NINEA du fournisseur" : "") + "."), 182);
+    doc.text(c, 14, y); y += c.length * 4.2 + 6;
+    if (y > 245) { doc.addPage(); h.header(doc, titre, sous); y = 40; }
+    doc.setFont("helvetica", "bold"); doc.text(h.t("Pour " + e.nom), 120, y); doc.setDrawColor(180, 180, 180); doc.rect(118, y + 3, 78, 28);
+    if (window.OUT) OUT.signerPDF(doc, 118, y + 3, 78, 28, e.signature, e.cachet);
+    h.footers(doc, titre); X.saveFile(doc.output("blob"), bn.num + "_" + X.slug(bn.four || "fournisseur") + ".pdf");
+  }
+
+  // ---- Matériel et engins
+  function coutMat(m) { if (m.type !== "location" || !m.debut) return 0; var f = m.fin && m.fin < jour() ? m.fin : jour(), j = Math.max(0, PL.diff(m.debut, f) + 1); return m.unite === "mois" ? n(m.tarif) * j / 30 : n(m.tarif) * j; }
+  function payeMat(p, id) { return p.factu.achats.filter(function (a) { return a.mat === id; }).reduce(function (s, a) { return s + n(a.mt); }, 0); }
+  function materielHTML() {
+    var p = ensure(P()), M = p.materiel, loc = M.reduce(function (s, m) { return s + coutMat(m); }, 0), pay = M.reduce(function (s, m) { return s + payeMat(p, m.id); }, 0), panne = M.filter(function (m) { return m.etat === "panne"; }).length;
+    var h = '<div class="card"><h2>Matériel et engins du chantier</h2><p class="hint">Bétonnière, vibreur, étais, échafaudage, camion… Notez ce qui est sur le chantier, à qui il appartient et son état. Pour le matériel loué, TABAX calcule le coût jour après jour : vous voyez quand il vaut mieux le rendre.</p>' +
+      '<div class="kpis">' + X.kpi("Matériel sur le chantier", M.filter(function (m) { return !m.fin || m.fin >= jour(); }).length, "éléments") + X.kpi("Coût de location à ce jour", fmt(loc), "FCFA") + X.kpi("Location payée", fmt(pay), "FCFA · reste " + fmt(loc - pay)) + X.kpi("En panne", panne, panne ? "à faire réparer" : "tout fonctionne") + "</div>" +
+      (M.length ? '<div style="overflow-x:auto"><table class="t edit"><tr><th class="l">Matériel</th><th>Propriété</th><th class="l">Loueur</th><th>Arrivé le</th><th>Rendu le</th><th>Tarif</th><th>Par</th><th>État</th><th>Coût à ce jour</th><th></th></tr>' + M.map(function (m, i) {
+        var b = "materiel." + i, c = coutMat(m), rest = c - payeMat(p, m.id);
+        return '<tr><td class="l">' + inp(b + ".nom", { text: true }) + "</td><td>" + sel(b + ".type", m.type, [["propre", "À nous"], ["location", "Loué"]], true) + '</td><td class="l">' + (m.type === "location" ? inp(b + ".four", { text: true }) : "—") + "</td><td>" + inp(b + ".debut", { date: true, cls: "rr" }) + "</td><td>" + inp(b + ".fin", { date: true, cls: "rr" }) + "</td><td>" + (m.type === "location" ? inp(b + ".tarif", { w: "90px", cls: "rr" }) : "—") + "</td><td>" + (m.type === "location" ? sel(b + ".unite", m.unite || "jour", [["jour", "jour"], ["mois", "mois"]], true) : "") + "</td><td>" + sel(b + ".etat", m.etat || "bon", [["bon", "Bon état"], ["panne", "En panne"], ["repar", "En réparation"]], true) + "</td><td>" + (m.type === "location" ? fmt(c) + (rest > 1 ? '<br><button class="btn sm" data-mpay="' + i + '">Payer ' + fmt(rest) + "</button>" : "") : "—") + '</td><td><button class="btn sm danger" data-mdel="' + i + '">×</button></td></tr>';
+      }).join("") + "</table></div>" : "") + '<button class="btn p" id="mAdd">+ Ajouter du matériel</button></div>';
+    return h;
+  }
+  function postMateriel() {
+    var p = ensure(P()); rerender();
+    $("mAdd").onclick = function () { p.materiel.push({ id: uid("m"), nom: "", type: "propre", four: "", debut: jour(), fin: "", tarif: 0, unite: "jour", etat: "bon" }); X.save(); X.renderPage(); };
+    document.querySelectorAll("[data-mdel]").forEach(function (b) { b.onclick = function () { p.materiel.splice(+b.dataset.mdel, 1); X.save(); X.renderPage(); }; });
+    document.querySelectorAll("[data-mpay]").forEach(function (b) { b.onclick = function () { var m = p.materiel[+b.dataset.mpay], r = coutMat(m) - payeMat(p, m.id); ajouterDepense(p, { four: m.four, lib: "Location " + (m.nom || "matériel"), mt: Math.round(r), mat: m.id }); X.save(); X.renderPage(); X.toast("Location enregistrée dans les dépenses"); }; });
+  }
+
+  /* =======================================================================
+     PLANS ET RÉSERVES
+     ======================================================================= */
+  var placer = false;
+  function lireImage(file, max) {
+    return new Promise(function (res, rej) {
+      var rd = new FileReader();
+      rd.onload = function () { var img = new Image(); img.onload = function () { var sc = Math.min(1, (max || 2000) / Math.max(img.width, img.height)), cv = document.createElement("canvas"); cv.width = Math.round(img.width * sc); cv.height = Math.round(img.height * sc); var c = cv.getContext("2d"); c.fillStyle = "#fff"; c.fillRect(0, 0, cv.width, cv.height); c.drawImage(img, 0, 0, cv.width, cv.height); res({ data: cv.toDataURL("image/jpeg", 0.85), w: cv.width, h: cv.height }); }; img.onerror = rej; img.src = rd.result; };
+      rd.onerror = rej; rd.readAsDataURL(file);
+    });
+  }
+  function resPlan(p, id) { return p.opc.reserves.map(function (r, i) { return { r: r, i: i }; }).filter(function (x) { return x.r.plan === id; }); }
+  function plansHTML() {
+    var p = ensure(P()), L = p.plans, ui = X.ui; ui.plan = L.some(function (x) { return x.id === ui.plan; }) ? ui.plan : (L[0] || {}).id;
+    var h = '<div class="card"><h2>Plans du chantier et réserves</h2><p class="hint">Ajoutez les plans (photo ou image JPG/PNG ; pour un PDF, faites une capture de la page). Touchez « Placer une réserve » puis l\'endroit exact sur le plan : la réserve est numérotée, suivie jusqu\'à sa levée et reprise dans la liste OPC et le PV de réception.</p>' +
+      '<div class="bar-btn">' + L.map(function (pl) { var o = resPlan(p, pl.id).filter(function (x) { return !x.r.levee; }).length; return '<button class="btn' + (pl.id === ui.plan ? " p" : "") + '" data-pl="' + pl.id + '">' + esc(pl.nom) + (o ? " (" + o + ")" : "") + "</button>"; }).join("") + '<label class="btn">+ Ajouter un plan<input type="file" accept="image/*" id="plAdd" hidden></label></div>';
+    var pl = L.filter(function (x) { return x.id === ui.plan; })[0];
+    if (!pl) return h + '<p class="hint">Aucun plan pour l\'instant.</p></div>';
+    var R = resPlan(p, pl.id);
+    h += '<div class="bar-btn"><label>Nom du plan <input data-b="plans.' + L.indexOf(pl) + '.nom" value="' + esc(pl.nom) + '" class="rr" style="width:200px"></label><button class="btn ' + (placer ? "p" : "") + '" id="plPin">' + (placer ? "Touchez le plan à l'endroit de la réserve…" : "📍 Placer une réserve") + '</button><button class="btn" id="plPdf">PDF du plan avec les réserves</button><button class="btn danger" id="plDel">Supprimer ce plan</button></div>' +
+      '<div id="plBox" style="position:relative;max-width:100%;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:#f4f6f9;' + (placer ? "cursor:crosshair;outline:3px solid #c23b3b" : "") + '"><img id="plImg" alt="" style="display:block;width:100%;min-height:120px">' +
+      R.map(function (x, k) { return '<span data-pin="' + x.i + '" title="' + esc(x.r.desc || "Réserve " + (k + 1)) + '" style="position:absolute;left:' + x.r.x + "%;top:" + x.r.y + '%;transform:translate(-50%,-50%);width:24px;height:24px;border-radius:50%;background:' + (x.r.levee ? "#2e8b57" : "#c23b3b") + ';color:#fff;font:700 12px/24px sans-serif;text-align:center;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.4);cursor:pointer">' + (k + 1) + "</span>"; }).join("") + "</div>";
+    if (R.length) h += '<table class="t edit" style="margin-top:10px"><tr><th>N°</th><th class="l">Description</th><th class="l">Responsable</th><th>À lever avant le</th><th>Levée le</th><th></th></tr>' + R.map(function (x, k) { var b = "opc.reserves." + x.i, late = !x.r.levee && x.r.ech && x.r.ech < jour(); return '<tr id="rrow' + x.i + '"><td><b style="color:' + (x.r.levee ? "#2e8b57" : "#c23b3b") + '">' + (k + 1) + '</b></td><td class="l">' + inp(b + ".desc", { text: true, ph: "Ex. fissure en angle, enduit à reprendre" }) + '</td><td class="l">' + inp(b + ".resp", { text: true }) + "</td><td>" + inp(b + ".ech", { date: true }) + (late ? " " + badge("rouge", "en retard") : "") + "</td><td>" + inp(b + ".levee", { date: true, cls: "rr" }) + '</td><td><button class="btn sm danger" data-rpdel="' + x.i + '">×</button></td></tr>'; }).join("") + "</table>";
+    return h + "</div>";
+  }
+  function postPlans() {
+    var p = ensure(P()), ui = X.ui; rerender();
+    document.querySelectorAll("[data-pl]").forEach(function (b) { b.onclick = function () { ui.plan = b.dataset.pl; placer = false; X.renderPage(); }; });
+    var f = $("plAdd"); if (f) f.onchange = function () {
+      var file = f.files[0]; if (!file) return;
+      lireImage(file, 2200).then(function (im) { var id = uid("pl"); return X.photoPut(id, im.data).then(function () { p.plans.push({ id: id, nom: (file.name || "Plan").replace(/\.[^.]+$/, "").slice(0, 40), w: im.w, h: im.h }); ui.plan = id; X.save(); X.renderPage(); X.toast("Plan ajouté"); }); }).catch(function () { X.toast("Image illisible : utilisez un fichier JPG ou PNG"); });
+    };
+    var img = $("plImg"); if (img && ui.plan) X.photoGet(ui.plan).then(function (d) { if (d) img.src = d; });
+    var pin = $("plPin"); if (pin) pin.onclick = function () { placer = !placer; X.renderPage(); };
+    var box = $("plBox"); if (box) box.onclick = function (ev) {
+      if (!placer || ev.target.dataset.pin) return;
+      var r = box.getBoundingClientRect(), x = Math.round(1000 * (ev.clientX - r.left) / r.width) / 10, y = Math.round(1000 * (ev.clientY - r.top) / r.height) / 10;
+      var pl = p.plans.filter(function (q) { return q.id === ui.plan; })[0];
+      p.opc.reserves.push({ loc: pl ? pl.nom : "", desc: "", resp: "", ech: PL.addDays(jour(), 15), levee: "", photos: [], date: jour(), plan: ui.plan, x: x, y: y });
+      placer = false; X.save(); X.renderPage();
+      var rows = document.querySelectorAll("[id^=rrow]"), last = rows[rows.length - 1]; if (last) { var i = last.querySelector("input"); if (i) i.focus(); }
+    };
+    document.querySelectorAll("[data-pin]").forEach(function (s) { s.onclick = function (ev) { ev.stopPropagation(); var row = $("rrow" + s.dataset.pin); if (row) { row.scrollIntoView({ behavior: "smooth", block: "center" }); row.style.background = "#fff3c4"; var i = row.querySelector("input"); if (i) i.focus(); setTimeout(function () { row.style.background = ""; }, 1500); } }; });
+    document.querySelectorAll("[data-rpdel]").forEach(function (b) { b.onclick = function () { p.opc.reserves.splice(+b.dataset.rpdel, 1); X.save(); X.renderPage(); }; });
+    var del = $("plDel"); if (del) del.onclick = function () { confirmer(del, "Confirmer (les réserves sont gardées dans OPC)", function () { var id = ui.plan; p.plans = p.plans.filter(function (q) { return q.id !== id; }); p.opc.reserves.forEach(function (r) { if (r.plan === id) { delete r.plan; delete r.x; delete r.y; } }); if (X.photoDel) X.photoDel(id); ui.plan = null; X.save(); X.renderPage(); }); };
+    var pdf = $("plPdf"); if (pdf) pdf.onclick = function () { pdfPlan(ui.plan); };
+  }
+  function pdfPlan(id) {
+    var p = ensure(P()), pl = p.plans.filter(function (q) { return q.id === id; })[0]; if (!pl) return;
+    X.photoGet(id).then(function (data) {
+      var h = pdfH(), J = window.jspdf.jsPDF, paysage = (pl.w || 4) >= (pl.h || 3), doc = new J({ unit: "mm", format: "a4", orientation: paysage ? "landscape" : "portrait" });
+      var W = paysage ? 297 : 210, Hh = paysage ? 210 : 297, titre = "PLAN ET RÉSERVES", sous = p.info.nom + " · " + pl.nom + " · situation au " + fr(jour());
+      h.header(doc, titre, sous);
+      var mw = W - 28, mh = Hh - 36 - 18, r = Math.min(mw / (pl.w || 1), mh / (pl.h || 1)), iw = (pl.w || 1) * r, ih = (pl.h || 1) * r, x0 = 14 + (mw - iw) / 2, y0 = 36;
+      try { doc.addImage(data, "JPEG", x0, y0, iw, ih); } catch (e) {}
+      var R = resPlan(p, id);
+      R.forEach(function (x, k) { var cx = x0 + iw * x.r.x / 100, cy = y0 + ih * x.r.y / 100; if (x.r.levee) doc.setFillColor(46, 139, 87); else doc.setFillColor(194, 59, 59); doc.setDrawColor(255, 255, 255); doc.setLineWidth(0.6); doc.circle(cx, cy, 3, "FD"); doc.setTextColor(255, 255, 255); doc.setFont("helvetica", "bold"); doc.setFontSize(7.5); doc.text(String(k + 1), cx, cy + 1, { align: "center" }); });
+      doc.setTextColor(30, 30, 30);
+      if (R.length) { doc.addPage("a4", "portrait"); h.header(doc, titre, sous); h.table(doc, { startY: 40, head: [["N°", "Description", "Responsable", "À lever avant le", "État"]], body: R.map(function (x, k) { return [k + 1, h.t(x.r.desc || "-"), h.t(x.r.resp || "-"), fr(x.r.ech), x.r.levee ? h.t("Levée le " + fr(x.r.levee)) : h.t("À lever")]; }) }, titre, sous); }
+      h.footers(doc, titre); X.saveFile(doc.output("blob"), "Plan_reserves_" + X.slug(pl.nom) + ".pdf");
+    });
+  }
+
+  /* ---------------- Approvisionnements : onglets ---------------- */
+  var TABS_APPRO = [["besoins", "Besoins en matériaux"], ["bons", "Bons de commande"], ["stock", "Stock du chantier"], ["mat", "Matériel et engins"]];
+  function pageAppro(sub) { return ({ bons: bonsHTML, stock: stockHTML, mat: materielHTML }[sub] || function () { return ""; })(); }
+  function postAppro(sub) { ({ bons: postBons, stock: postStock, mat: postMateriel }[sub] || function () {})(); }
+  function alertesStock(p) { ensure(p); return etatStock(p).filter(function (x) { return x.alerte; }); }
+
+  return { tachHTML: tachHTML, postTach: postTach, plansHTML: plansHTML, postPlans: postPlans, TABS_APPRO: TABS_APPRO, pageAppro: pageAppro, postAppro: postAppro, nouveauBon: nouveauBon, alertesStock: alertesStock, payeTach: payeTach, montantTach: montantTach, coutMat: coutMat, ensure: ensure, pdfContrat: pdfContrat, pdfBon: pdfBon };
+})();
+</script>
+<script>/* =========================================================================
+   TABAX – Notifications et rapport du lundi
+   · Notifications du navigateur (alertes rouges et orange : retards, commandes,
+     stock bas, factures impayées, tâcherons payés en avance, sauvegarde)
+   · Rapport hebdomadaire de tous les chantiers en cours (PDF + WhatsApp),
+     mis en avant chaque lundi
+   ========================================================================= */
+var HEBDO = (function () {
+  "use strict";
+  var X = APP.X, PL = PLAN, S = function () { return X.S(); }, $ = function (id) { return document.getElementById(id); };
+  var esc = X.esc, fmt = X.fmt;
+  function n(v) { v = parseFloat(v); return isFinite(v) ? v : 0; }
+  function jour() { var d = new Date(); return d.getFullYear() + "-" + ("0" + (d.getMonth() + 1)).slice(-2) + "-" + ("0" + d.getDate()).slice(-2); }
+  function fr(d) { return d ? d.split("-").reverse().join("/") : "-"; }
+  function lundi(d) { var x = new Date(d + "T12:00:00"), k = (x.getDay() + 6) % 7; return PL.addDays(d, -k); }
+  function chantiers() { return S().projects.filter(function (p) { return !p.archive && p.statut === "chantier" && !/exemple/i.test(p.info.nom); }); }
+
+  /* ---------------- Toutes les alertes ---------------- */
+  function alertes() {
+    var s = S(), j = jour(), A = [];
+    try { A = PL.alertes(s.projects.filter(function (p) { return !/exemple/i.test(p.info.nom); }), X.ST(), j, s.ent); } catch (e) { A = []; }
+    s.projects.forEach(function (p) {
+      if (p.archive || /exemple/i.test(p.info.nom) || !window.CHT) return;
+      CHT.alertesStock(p).forEach(function (x) { A.push({ niv: "orange", projet: p.info.nom, pid: p.id, type: "Stock", msg: x.nom + " : il reste " + fmt(Math.max(0, x.stock), 1) + " " + x.u + (x.jours != null ? " (≈ " + fmt(Math.max(0, x.jours)) + " jours)" : "") + ". Recommandez." }); });
+      (p.tacherons || []).forEach(function (t) { var m = CHT.montantTach(t), pa = CHT.payeTach(p, t.id); if (m > 0 && 100 * pa / m > n(t.avancement) + 5) A.push({ niv: "orange", projet: p.info.nom, pid: p.id, type: "Tâcheron", msg: (t.nom || "Tâcheron") + " : payé " + fmt(100 * pa / m) + " % pour " + fmt(t.avancement) + " % de travail fait." }); });
+      (p.materiel || []).forEach(function (m) { if (m.etat === "panne") A.push({ niv: "orange", projet: p.info.nom, pid: p.id, type: "Matériel", msg: (m.nom || "Matériel") + " en panne." }); });
+    });
+    var sv = s.sauvegarde || {}; if (s.projects.some(function (p) { return !/exemple/i.test(p.info.nom); }) && (!sv.derniere || PL.diff(sv.derniere.slice(0, 10), j) > 7)) A.push({ niv: "orange", projet: "Entreprise", type: "Sauvegarde", msg: sv.derniere ? "Dernière sauvegarde il y a " + PL.diff(sv.derniere.slice(0, 10), j) + " jours." : "Aucune sauvegarde de vos données n'a encore été faite." });
+    return A;
+  }
+
+  /* ---------------- Notifications ---------------- */
+  function supporte() { return "Notification" in window; }
+  function cle(a) { return (a.pid || "") + "|" + a.type + "|" + a.msg.slice(0, 60); }
+  function notifier(titre, corps, tag) {
+    var opt = { body: corps, tag: tag || "tabax", icon: "icone-192.png", badge: "icone-192.png" };
+    try {
+      var direct = function () { try { new Notification(titre, opt); } catch (e) {} };
+      if (navigator.serviceWorker && navigator.serviceWorker.controller) return Promise.race([navigator.serviceWorker.ready, new Promise(function (r) { setTimeout(r, 1500); })]).then(function (reg) { if (reg && reg.showNotification) return reg.showNotification(titre, opt); direct(); }).catch(direct);
+      direct();
+    } catch (e) {}
+  }
+  function verifier(force) {
+    var s = S(), nf = s.notif = s.notif || {}; if (!nf.actif || !supporte() || Notification.permission !== "granted") return;
+    var j = jour(); if (nf.jour !== j) { nf.jour = j; nf.vues = []; }
+    var A = alertes().filter(function (a) { return a.niv === "rouge" || a.niv === "orange"; }), nouv = A.filter(function (a) { return nf.vues.indexOf(cle(a)) < 0; });
+    if (nouv.length || force) {
+      var L = (nouv.length ? nouv : A).slice().sort(function (a, b) { return a.niv === b.niv ? 0 : a.niv === "rouge" ? -1 : 1; });
+      if (L.length) notifier("TABAX : " + L.length + " point" + (L.length > 1 ? "s" : "") + " à surveiller", L.slice(0, 3).map(function (a) { return "• " + (a.projet ? a.projet + " – " : "") + a.msg; }).join("\n"), "tabax-alertes");
+      else if (force) notifier("TABAX", "Aucune alerte en cours. Tout est sous contrôle.", "tabax-alertes");
+      nouv.forEach(function (a) { nf.vues.push(cle(a)); });
+    }
+    var lu = lundi(j); if (j === lu && nf.hebdo !== lu && chantiers().length) { nf.hebdo = lu; notifier("TABAX : c'est lundi", "Votre rapport de la semaine est prêt (" + chantiers().length + " chantier" + (chantiers().length > 1 ? "s" : "") + "). Ouvrez le tableau de bord.", "tabax-hebdo"); }
+    X.save();
+  }
+  var minuterie = null;
+  function demarrer() { if (minuterie) return; setTimeout(function () { verifier(); }, 4000); minuterie = setInterval(function () { verifier(); }, 30 * 60 * 1000); }
+  function paramsHTML() {
+    var s = S(), nf = s.notif || {}, perm = supporte() ? Notification.permission : "absent";
+    return '<div class="card"><h2>Notifications</h2><p class="hint">TABAX vous prévient sur cet appareil (ordinateur ou téléphone) dès qu\'un point demande votre attention : tâche critique en retard, commande à passer, stock presque vide, facture impayée, tâcheron payé en avance, sauvegarde oubliée. Et chaque lundi matin, votre rapport de la semaine.</p>' +
+      (perm === "absent" ? '<div class="note">Ce navigateur ne gère pas les notifications. Utilisez Chrome ou Edge.</div>' :
+        perm === "denied" ? '<div class="note rouge">Les notifications sont bloquées pour TABAX dans ce navigateur. Cliquez sur le cadenas à gauche de l\'adresse, puis autorisez les notifications.</div>' :
+          '<div class="bar-btn"><label><input type="checkbox" id="nfOn"' + (nf.actif && perm === "granted" ? " checked" : "") + '> Recevoir les alertes sur cet appareil</label>' + (nf.actif && perm === "granted" ? '<button class="btn sm" id="nfTest">Tester maintenant</button>' : "") + "</div>") +
+      '<p class="hint">Les notifications arrivent quand TABAX est ouvert, même en arrière-plan ou réduit dans la barre des tâches. Pour les recevoir application fermée, il faudra un service d\'envoi en ligne (à ajouter plus tard avec le compte en ligne).</p></div>';
+  }
+  function postParams() {
+    var c = $("nfOn"); if (c) c.onchange = function () {
+      var s = S(); s.notif = s.notif || {};
+      if (!this.checked) { s.notif.actif = false; X.save(); X.renderPage(); return; }
+      Notification.requestPermission().then(function (r) { s.notif.actif = r === "granted"; s.notif.vues = []; X.save(); X.renderPage(); if (r === "granted") { X.toast("Notifications activées"); verifier(true); demarrer(); } else X.toast("Notifications refusées par le navigateur"); });
+    };
+    var t = $("nfTest"); if (t) t.onclick = function () { S().notif.vues = []; verifier(true); };
+  }
+
+  /* ---------------- Rapport de la semaine ---------------- */
+  function semaine(p, j) {
+    var q = CALC.dqe(p, X.ST()), d1 = PL.addDays(lundi(j), -7), d2 = PL.addDays(d1, 6), n1 = PL.addDays(d2, 1), n2 = PL.addDays(n1, 6);
+    var F = PL.prevision(p, q, j), F0 = PL.prevision(p, q, PL.addDays(d1, -1)), F1 = PL.prevision(p, q, d2), idx0 = {}; F0.taches.forEach(function (t) { idx0[t.id] = t; });
+    var poids = function (FF) { var tot = 0, fait = 0; FF.taches.forEach(function (t) { var w = Math.max(1, t.dur); tot += w; fait += w * t.pct / 100; }); return tot ? 100 * fait / tot : 0; };
+    var prevuPct = (function () { var tot = 0, f = 0; F.base.taches.forEach(function (t) { var w = Math.max(1, t.dur); tot += w; if (j >= t.fin) f += w; else if (j >= t.debut) f += w * (PL.joursOuvres(t.debut, j, F.cfg) / Math.max(1, t.dur)); }); return tot ? 100 * f / tot : 0; })();
+    var avances = F1.taches.map(function (t) { var a = idx0[t.id] ? idx0[t.id].pct : 0; return { nom: t.nom, de: a, a: t.pct }; }).filter(function (x) { return x.a > x.de + 0.5; });
+    var R = ((p.suivi || {}).rapports || []).filter(function (r) { return r.date >= d1 && r.date <= d2; });
+    var eff = R.length ? R.reduce(function (s, r) { return s + Object.keys(r.eff || {}).reduce(function (a, k) { return a + n(r.eff[k]); }, 0); }, 0) / R.length : 0;
+    var inc = R.filter(function (r) { return (r.incidents || "").trim(); }).map(function (r) { return fr(r.date) + " : " + r.incidents.trim(); });
+    var dep = ((p.factu || {}).achats || []).filter(function (a) { return a.date >= d1 && a.date <= d2; }).reduce(function (s, a) { return s + n(a.mt); }, 0) + R.reduce(function (s, r) { return s + (r.dep || []).reduce(function (a, x) { return a + n(x.mt); }, 0); }, 0);
+    var enc = 0; (((p.factu || {}).docs) || []).forEach(function (d) { (d.paiements || []).forEach(function (x) { if (x.date >= d1 && x.date <= d2) enc += n(x.mt); }); });
+    var avenir = F.taches.filter(function (t) { return t.pct < 100 && t.pDebut <= n2 && t.pFin >= n1; }).map(function (t) { return { nom: t.nom, debut: t.pDebut, fin: t.pFin, pct: t.pct, crit: t.critique, equipe: t.equipe, metier: t.metier }; });
+    var cmd = []; F.taches.forEach(function (t) { if (t.pct === 0 && t.appro) t.appro.forEach(function (c) { if (((p.opc || {}).commandes || {})[t.id + "|" + c]) return; var av = PL.addDays(t.pDebut, -(PL.APPRO[c] || 7) - 2); if (av <= n2) cmd.push({ cat: c, pour: t.nom, avant: av }); }); });
+    var res = ((p.opc || {}).reserves || []).filter(function (r) { return !r.levee; });
+    var crit = PL.critiqueReel(F), idf = {}; F.taches.forEach(function (t) { idf[t.id] = t; });
+    return { p: p, d1: d1, d2: d2, n1: n1, n2: n2, reel: poids(F), prevu: Math.min(100, prevuPct), fin: F.fin, livraison: p.info.dateLivraison, avances: avances, nbRap: R.length, eff: eff, inc: inc, dep: dep, enc: enc, avenir: avenir, cmd: cmd, res: res, crit: crit.slice(0, 4).map(function (id) { return idf[id] && idf[id].nom; }).filter(Boolean), al: alertes().filter(function (a) { return a.pid === p.id; }) };
+  }
+  function pdfSemaine() {
+    var C = chantiers(); if (!C.length) return X.toast("Aucun chantier en cours (statut « Chantier en cours »)");
+    var h = APP._pdf().h, j = jour(), doc = h.doc0(), titre = "RAPPORT DE LA SEMAINE", W = C.map(function (p) { return semaine(p, j); }), sous = "Semaine du " + fr(W[0].d1) + " au " + fr(W[0].d2);
+    h.header(doc, titre, sous);
+    var y = h.table(doc, { startY: 40, head: [["Chantier", "Avancement réel", "Prévu", "Fin prévue", "Livraison promise", "Dépenses semaine", "Encaissé semaine", "Alertes"]], body: W.map(function (w) { var r = w.livraison ? PL.diff(w.fin, w.livraison) : null; return [h.t(w.p.info.nom), fmt(w.reel) + " %", fmt(w.prevu) + " %", fr(w.fin) + (r != null && r < 0 ? h.t(" (" + (-r) + " j de retard)") : ""), fr(w.livraison), h.f(w.dep), h.f(w.enc), String(w.al.filter(function (a) { return a.niv === "rouge"; }).length) + h.t(" rouge(s)")]; }), styles: { fontSize: 8 } }, titre, sous) + 6;
+    W.forEach(function (w) {
+      doc.addPage(); var st = w.p.info.nom; h.header(doc, titre, st); y = 40;
+      var sec = function (t) { if (y > 262) { doc.addPage(); h.header(doc, titre, st); y = 40; } doc.setFont("helvetica", "bold"); doc.setFontSize(10.5); doc.setTextColor(30, 30, 30); doc.text(h.t(t), 14, y); y += 2; };
+      var tab = function (head, body, o) { y = h.table(doc, Object.assign({ startY: y + 1, head: [head], body: body }, o || {}), titre, st) + 6; };
+      var txt = function (t) { doc.setFont("helvetica", "normal"); doc.setFontSize(9); var L = doc.splitTextToSize(h.t(t), 182); doc.text(L, 14, y + 4); y += L.length * 4.2 + 6; };
+      var ecart = w.reel - w.prevu;
+      sec("En bref"); txt("Avancement réel " + fmt(w.reel) + " % pour " + fmt(w.prevu) + " % prévu (" + (ecart >= 0 ? "en avance de " : "en retard de ") + fmt(Math.abs(ecart)) + " points). Fin prévue le " + fr(w.fin) + (w.livraison ? " pour une livraison promise le " + fr(w.livraison) : "") + ". " + w.nbRap + " rapport(s) de chantier cette semaine, effectif moyen " + fmt(w.eff, 1) + " personnes. Dépenses : " + fmt(w.dep) + " FCFA ; encaissements : " + fmt(w.enc) + " FCFA." + (w.crit.length ? " Chemin critique actuel : " + w.crit.join(" > ") + "…" : ""));
+      sec("Travail réalisé la semaine passée"); if (w.avances.length) tab(["Tâche", "Avancement début de semaine", "Fin de semaine"], w.avances.map(function (a) { return [h.t(a.nom), fmt(a.de) + " %", fmt(a.a) + " %"]; })); else txt("Aucun avancement déclaré dans les rapports de chantier de la semaine.");
+      if (w.inc.length) { sec("Incidents signalés"); txt(w.inc.join("\n")); }
+      sec("Programme de la semaine du " + fr(w.n1) + " au " + fr(w.n2)); if (w.avenir.length) tab(["Tâche", "Début", "Fin", "Fait", "Critique"], w.avenir.map(function (t) { return [h.t(t.nom), fr(t.debut), fr(t.fin), fmt(t.pct) + " %", t.crit ? "OUI" : ""]; })); else txt("Aucune tâche prévue.");
+      if (w.cmd.length) { sec("Commandes à passer"); tab(["Fourniture", "Pour la tâche", "Commander avant le"], w.cmd.map(function (c) { return [h.t(c.cat), h.t(c.pour), fr(c.avant)]; })); }
+      if (w.res.length) { sec("Réserves à lever (" + w.res.length + ")"); tab(["Localisation", "Description", "Responsable", "Avant le"], w.res.slice(0, 15).map(function (r) { return [h.t(r.loc || "-"), h.t(r.desc || "-"), h.t(r.resp || "-"), fr(r.ech)]; })); }
+      if (w.al.length) { sec("Points de vigilance"); tab(["Niveau", "Sujet", "Détail"], w.al.slice(0, 15).map(function (a) { return [a.niv === "rouge" ? "URGENT" : a.niv === "orange" ? h.t("À suivre") : "Info", h.t(a.type), h.t(a.msg)]; }), { columnStyles: { 0: { cellWidth: 22 }, 1: { cellWidth: 26 } } }); }
+    });
+    h.footers(doc, titre); X.saveFile(doc.output("blob"), "Rapport_semaine_" + W[0].d1 + ".pdf");
+    var s = S(); s.notif = s.notif || {}; s.notif.hebdoFait = lundi(j); X.save();
+  }
+  function messageSemaine() {
+    var j = jour(), W = chantiers().map(function (p) { return semaine(p, j); });
+    return "*Rapport de la semaine – " + S().ent.nom + "*\nSemaine du " + fr((W[0] || {}).d1) + " au " + fr((W[0] || {}).d2) + "\n\n" + W.map(function (w) { return "*" + w.p.info.nom + "* : " + fmt(w.reel) + " % fait (prévu " + fmt(w.prevu) + " %), fin prévue le " + fr(w.fin) + ". Semaine à venir : " + (w.avenir.slice(0, 3).map(function (t) { return t.nom; }).join(", ") || "rien de prévu") + "."; }).join("\n");
+  }
+  function dashHTML() {
+    if (window.SYNC && SYNC.estCollab()) return "";
+    var C = chantiers(), j = jour(), lu = lundi(j), s = S(), nf = s.notif || {}; if (!C.length) return "";
+    var estLundi = j === lu, fait = nf.hebdoFait === lu;
+    return '<div class="card"' + (estLundi && !fait ? ' style="border:2px solid #2b4a8c"' : "") + '><h2>Rapport de la semaine' + (estLundi && !fait ? ' <span class="badge orange">c\'est lundi : il est prêt</span>' : "") + '</h2><p class="hint">Tous vos chantiers en cours (' + C.length + ") : travail fait la semaine passée, programme de la semaine, commandes, réserves et points de vigilance. À lire chaque lundi matin et à partager avec votre équipe.</p>" +
+      '<div class="bar-btn"><button class="btn p" id="hbPdf">Rapport de la semaine (PDF)</button><button class="btn" id="hbWa">Résumé par WhatsApp</button>' + (supporte() && !(nf.actif && Notification.permission === "granted") ? '<button class="btn" data-go="params">Activer les notifications</button>' : "") + "</div></div>";
+  }
+  function apresRendu(page) {
+    var b; if ((b = $("hbPdf"))) b.onclick = pdfSemaine;
+    if ((b = $("hbWa"))) b.onclick = function () { var msg = messageSemaine(); if (window.PIL) PIL.envoyer(pdfSemaine, "", msg); else pdfSemaine(); };
+    if (page === "params") postParams();
+    document.querySelectorAll("#content [data-go='params']").forEach(function (x) { x.onclick = function (e) { e.preventDefault(); X.go("params"); }; });
+    demarrer();
+  }
+  return { alertes: alertes, verifier: verifier, paramsHTML: paramsHTML, dashHTML: dashHTML, apresRendu: apresRendu, pdfSemaine: pdfSemaine, semaine: semaine, messageSemaine: messageSemaine };
+})();
+</script>
+<script>/* =========================================================================
+   TABAX – Prise en main
+   · Assistant de bienvenue au premier lancement (entreprise, régime, 1er projet)
+   · Liste « Bien démarrer » sur le tableau de bord
+   · Bouton « ? » d'aide sur chaque page
+   · Suppression du projet exemple en un clic
+   ========================================================================= */
+var GUIDE = (function () {
+  "use strict";
+  var X = function () { return APP.X; }, S = function () { return APP.X.S(); }, $ = function (id) { return document.getElementById(id); };
+  var esc = function (s) { return APP.X.esc(s); };
+
+  /* ---------------- Aide par page ---------------- */
+  var AIDE = {
+    dash: ["Tableau de bord", "La vue d'ensemble de l'entreprise et du projet actif.", ["Les alertes en haut vous disent ce qui demande votre attention aujourd'hui (factures, TVA, commandes, sécurité).", "Les chiffres clés sont ceux du projet choisi dans la liste en haut de l'écran.", "Changez de projet avec la liste déroulante en haut : toutes les pages suivent."], "Ouvrez TABAX chaque matin : en 30 secondes vous savez où agir."],
+    projets: ["Projets", "Chaque chantier ou petit travail est un projet : il porte son devis, son planning, son suivi et ses documents.", ["« Nouveau chantier » : pour un bâtiment chiffré à partir du plan (métré complet).", "« Petits travaux » : pour une réparation ou un petit lot chiffré en quelques lignes.", "Remplissez la fiche : client, téléphone, ville, date de livraison promise.", "Passez le statut à « Chantier en cours » le jour du démarrage : le suivi et les alertes s'activent."], "Pour un client public, choisissez « Marché public » : l'onglet donne la procédure et les pièces du dossier."],
+    metres: ["Métrés / devis rapide", "Les quantités de l'ouvrage, niveau par niveau, ou les lignes d'un devis rapide.", ["Saisissez les dimensions lues sur le plan : TABAX calcule béton, acier, coffrage, maçonnerie, enduits…", "Vérifiez chaque niveau avant de passer aux prix.", "En petits travaux, choisissez un modèle puis ajustez les quantités."], "Un métré juste, c'est un devis juste : prenez le temps sur les fondations et les planchers."],
+    prix: ["Études de prix", "Le prix de vente de chaque ouvrage, à partir de vos coûts réels.", ["Bibliothèque : mettez VOS prix de matériaux, de main-d'œuvre et de matériel.", "Sous-détails : la composition de chaque ouvrage (quantités par unité).", "Coefficient K : vos frais généraux, aléas et bénéfice.", "Devis : le document à envoyer au client (PDF ou WhatsApp)."], "Les prix fournis au départ sont indicatifs (Dakar) : remplacez-les par ceux de vos fournisseurs."],
+    planning: ["Planning", "Le calendrier des travaux, calculé à partir des quantités et de vos équipes.", ["Les barres rouges forment le chemin critique : un jour perdu sur elles est un jour perdu sur la livraison.", "Les flèches montrent l'enchaînement des tâches.", "« Et si… » : testez l'effet d'un retard avant de prendre une décision.", "Ajustez la durée ou l'équipe d'une tâche dans le tableau du bas.", "« Figer » enregistre le planning de référence pour comparer plus tard."], "Mettez vos meilleures équipes et commandez en avance pour les tâches critiques."],
+    opc: ["OPC et anticipation", "Ce qu'il faut préparer dans les prochains jours pour ne pas bloquer le chantier.", ["Les commandes à passer avant une date, selon les délais de livraison.", "Les points d'arrêt qualité à faire valider (fouilles, ferraillage…).", "L'avancement réel saisi met à jour la date de fin prévue.", "Le lien de suivi permet au client de voir l'avancement sans compte."], "Regardez cette page chaque lundi pour organiser la semaine."],
+    terrain: ["Suivi terrain", "Le journal de chantier : ce qui a été fait, par qui, avec quoi.", ["Un rapport par jour : effectifs, avancement des tâches, météo, problèmes.", "Ajoutez des photos : elles sont datées et rangées avec le rapport.", "Plans et réserves : placez chaque réserve à l'endroit exact sur le plan."], "Le chef de chantier peut remplir les rapports depuis son téléphone avec son propre compte."],
+    qhse: ["Sécurité (QHSE)", "Prévenir les accidents et garder la trace de ce qui a été fait.", ["La causerie et la check-list du jour avant de démarrer.", "Déclarez tout incident, même sans blessé : c'est ainsi qu'on évite le suivant.", "Le plan de prévention et le registre se sortent en PDF pour les contrôles."], "Urgences : pompiers 18, police 17, gendarmerie 123, SAMU 1515."],
+    appro: ["Approvisionnements", "Les quantités de matériaux à acheter et quand.", ["Les besoins totaux du projet (ciment, acier, sable, gravier…).", "Le calendrier d'achat suit le planning.", "Bons de commande : envoyez-les en PDF ou WhatsApp, puis cliquez « Livré » à la réception.", "Stock : ce qui reste sur le chantier, avec une alerte avant la rupture.", "Matériel : engins propres ou loués, coût de location et pannes."], "Commandez le fer et le ciment quelques jours avant le coulage, pas le jour même."],
+    factu: ["Finances et comptabilité", "L'argent du chantier et de l'entreprise, expliqué simplement.", ["Situations et factures : ce que le client doit payer, et les relances.", "Dépenses : notez chaque achat avec son lot.", "Tâcherons : contrat, avance, paiements et reste à payer ; le contrat se signe à l'écran.", "Trésorerie : savoir à l'avance si vous manquerez d'argent.", "Comptabilité : journal, frais généraux, TVA à reverser et bilan, sans jargon."], "La TVA encaissée n'est pas à vous : déclarez-la et payez-la avant le 15 du mois suivant."],
+    memoires: ["Mémoires techniques", "Les documents pour répondre à un appel d'offres.", ["Méthodologie, moyens humains et matériels, planning, sécurité.", "Les textes se remplissent à partir du projet : relisez-les et adaptez-les."], "Un mémoire adapté au chantier gagne plus souvent qu'un mémoire générique."],
+    archives: ["Archives, REX et apprentissage", "La mémoire de l'entreprise, chantier après chantier.", ["Clôturez un chantier terminé : TABAX compare le prévu et le réel (retour d'expérience).", "Les rendements constatés améliorent les prochains devis et plannings.", "Importez les données de chantiers que d'autres vous confient pour enrichir la base."], "Plus vous clôturez de chantiers, plus les estimations deviennent justes."],
+    params: ["Paramètres", "Votre entreprise, vos documents et votre compte.", ["Coordonnées, NINEA, RCCM, logo, signature et cachet : ils apparaissent sur tous vos documents.", "Régime fiscal : réel (TVA 18 %) ou CGU (sans TVA).", "Compte en ligne et équipe : invitez vos chefs de chantier.", "Sauvegarde : gardez une copie de vos données sur votre ordinateur."], "Faites une sauvegarde au moins une fois par semaine."]
+  };
+  function modal(html, large) {
+    fermer();
+    var d = document.createElement("div"); d.id = "gModal";
+    d.style.cssText = "position:fixed;inset:0;background:rgba(15,25,45,.55);z-index:9999;display:flex;align-items:flex-start;justify-content:center;padding:5vh 12px;overflow:auto";
+    d.innerHTML = '<div style="background:#fff;border-radius:12px;max-width:' + (large ? 640 : 540) + 'px;width:100%;padding:22px 24px;box-shadow:0 12px 40px rgba(0,0,0,.25);position:relative"><button id="gX" aria-label="Fermer" style="position:absolute;right:10px;top:8px;border:0;background:none;font-size:24px;cursor:pointer;color:#667">×</button>' + html + "</div>";
+    d.onclick = function (e) { if (e.target === d) fermer(); };
+    document.body.appendChild(d); $("gX").onclick = fermer;
+    return d;
+  }
+  function fermer() { var m = $("gModal"); if (m) m.remove(); }
+  function aide(page) {
+    var a = AIDE[page]; if (!a) return;
+    modal('<h2 style="margin:0 0 6px">' + esc(a[0]) + '</h2><p style="color:#445">' + esc(a[1]) + '</p><ol style="padding-left:20px;line-height:1.55">' + a[2].map(function (x) { return "<li>" + esc(x) + "</li>"; }).join("") + '</ol><div class="note" style="margin:10px 0 0">💡 ' + esc(a[3]) + '</div><p style="margin:14px 0 0;text-align:right"><button class="btn" id="gRevoir">Revoir l\'assistant de démarrage</button></p>');
+    $("gRevoir").onclick = function () { assistant(0); };
+  }
+
+  /* ---------------- Projet exemple ---------------- */
+  function estExemple(p) { return /exemple/i.test((p.info && p.info.nom) || ""); }
+  function aExemple() { return S().projects.some(estExemple); }
+  function supprimerExemples(silencieux) {
+    var s = S(), n = s.projects.filter(estExemple).length; if (!n) return;
+    s.projects = s.projects.filter(function (p) { return !estExemple(p); });
+    if (!s.projects.length) { var v = DATA.projetVide(); s.projects.push(v); }
+    if (!s.projects.some(function (p) { return p.id === s.active; })) s.active = s.projects[0].id;
+    s.demo = false; X().save(); X().renderTop();
+    if (!silencieux) { X().renderPage(); X().toast(n > 1 ? n + " projets exemple supprimés" : "Projet exemple supprimé"); }
+  }
+
+  /* ---------------- Assistant de bienvenue ---------------- */
+  var w = {}, dejaOuvert = false;
+  function assistant(etape) {
+    var e = S().ent, s = S();
+    if (etape === 0) w = { nom: e.nom || "", tel: e.tel || "", adresse: e.adresse || "", email: e.email || "", ninea: e.ninea || "", regime: e.regime || "reel", debut: "chantier", supEx: true };
+    var pts = '<div style="display:flex;gap:6px;margin:0 0 14px">' + [0, 1, 2, 3].map(function (i) { return '<span style="flex:1;height:4px;border-radius:2px;background:' + (i <= etape ? "#2b4a8c" : "#dde2ea") + '"></span>'; }).join("") + "</div>";
+    var h = pts, inpt = function (k, l, ph) { return '<label class="f" style="display:block;margin:0 0 10px"><span>' + l + '</span><input data-w="' + k + '" value="' + esc(w[k]) + '" placeholder="' + (ph || "") + '" style="width:100%"></label>'; };
+    if (etape === 0) h += '<h2 style="margin:0 0 8px">Bienvenue dans TABAX</h2><p>TABAX vous accompagne du devis à la réception : métré, prix, planning avec chemin critique, suivi de chantier, sécurité, factures et comptabilité.</p><p>En <b>3 petites étapes</b>, on prépare l\'application pour votre entreprise. Vous pourrez tout modifier ensuite dans Paramètres.</p>';
+    if (etape === 1) h += '<h2 style="margin:0 0 8px">1. Votre entreprise</h2><p class="hint">Ces informations apparaissent sur vos devis, factures et PV.</p>' + inpt("nom", "Nom de l'entreprise") + inpt("tel", "Téléphone", "+221 …") + inpt("adresse", "Adresse") + inpt("email", "E-mail") + inpt("ninea", "NINEA (facultatif)");
+    if (etape === 2) h += '<h2 style="margin:0 0 8px">2. Votre régime fiscal</h2>' + [["reel", "Régime du réel", "Vos factures comportent la TVA à 18 %, que vous reversez chaque mois à l'État. C'est le cas des sociétés (SARL, SA, SUARL) et des entreprises qui dépassent 50 M FCFA de chiffre d'affaires."], ["cgu", "Contribution Globale Unique (CGU)", "Pour une entreprise individuelle de moins de 50 M FCFA TTC de chiffre d'affaires par an : vos factures sont sans TVA, avec un impôt unique calculé sur le chiffre d'affaires."]].map(function (r) { return '<label style="display:flex;gap:10px;align-items:flex-start;border:1px solid ' + (w.regime === r[0] ? "#2b4a8c" : "#dde2ea") + ';border-radius:8px;padding:10px 12px;margin:0 0 8px;cursor:pointer"><input type="radio" name="wReg" value="' + r[0] + '"' + (w.regime === r[0] ? " checked" : "") + '><span><b>' + r[1] + '</b><br><span class="hint">' + r[2] + "</span></span></label>"; }).join("") + '<p class="hint">En cas de doute, demandez à votre centre des impôts (DGID) ou à votre comptable.</p>';
+    if (etape === 3) h += '<h2 style="margin:0 0 8px">3. Par quoi commencer ?</h2>' + [["chantier", "Créer mon premier chantier", "Un bâtiment chiffré à partir du plan (villa, immeuble…)."], ["rapide", "Faire un devis de petits travaux", "Réparation, carrelage, peinture, clôture… en quelques lignes."], ["explorer", "Explorer d'abord l'exemple", "Une villa R+1 fictive déjà remplie pour découvrir toutes les pages."]].map(function (r) { return '<label style="display:flex;gap:10px;align-items:flex-start;border:1px solid ' + (w.debut === r[0] ? "#2b4a8c" : "#dde2ea") + ';border-radius:8px;padding:10px 12px;margin:0 0 8px;cursor:pointer"><input type="radio" name="wDeb" value="' + r[0] + '"' + (w.debut === r[0] ? " checked" : "") + '><span><b>' + r[1] + '</b><br><span class="hint">' + r[2] + "</span></span></label>"; }).join("") + (aExemple() ? '<label style="display:block;margin:6px 0 0"><input type="checkbox" id="wSup"' + (w.supEx && w.debut !== "explorer" ? " checked" : "") + (w.debut === "explorer" ? " disabled" : "") + "> Supprimer le projet exemple</label>" : "");
+    h += '<div style="display:flex;justify-content:space-between;margin-top:16px">' + (etape ? '<button class="btn" id="wPrev">← Retour</button>' : '<button class="btn" id="wSkip">Plus tard</button>') + '<button class="btn p" id="wNext">' + (etape === 3 ? "Terminer" : etape === 0 ? "Commencer" : "Suivant →") + "</button></div>";
+    var md = modal(h), plusTard = function () { s.guide.vu = true; X().save(); fermer(); };
+    $("gX").onclick = plusTard; md.onclick = function (ev) { if (ev.target === md) plusTard(); };
+    document.querySelectorAll("[data-w]").forEach(function (i) { i.oninput = function () { w[i.dataset.w] = i.value; }; });
+    document.querySelectorAll("[name=wReg]").forEach(function (i) { i.onchange = function () { w.regime = i.value; assistant(2); }; });
+    document.querySelectorAll("[name=wDeb]").forEach(function (i) { i.onchange = function () { w.debut = i.value; assistant(3); }; });
+    if ($("wSup")) $("wSup").onchange = function () { w.supEx = this.checked; };
+    if ($("wSkip")) $("wSkip").onclick = function () { s.guide.vu = true; X().save(); fermer(); };
+    if ($("wPrev")) $("wPrev").onclick = function () { assistant(etape - 1); };
+    $("wNext").onclick = function () {
+      if (etape === 1 && !String(w.nom).trim()) { X().toast("Indiquez au moins le nom de l'entreprise"); return; }
+      if (etape < 3) return assistant(etape + 1);
+      ["nom", "tel", "adresse", "email", "ninea"].forEach(function (k) { if (String(w[k]).trim()) e[k] = String(w[k]).trim(); });
+      if (window.COMPTA) COMPTA.changerRegime(w.regime); else e.regime = w.regime;
+      s.guide.vu = true; s.guide.regime = true;
+      fermer();
+      if (w.debut === "explorer") { var ex = s.projects.filter(estExemple)[0]; if (ex) s.active = ex.id; X().save(); X().renderTop(); X().go("dash"); X().toast("Bonne découverte ! Le bouton « ? » de chaque page explique son rôle."); return; }
+      var p = DATA.projetVide(); if (w.debut === "rapide") { p.mode = "rapide"; p.info.nom = "Petits travaux"; }
+      s.projects.push(p); s.active = p.id; s.demo = false;
+      if (w.supEx && aExemple()) supprimerExemples(true);
+      X().setStateRaw(s); X().save(); X().renderTop();
+      X().go(w.debut === "rapide" ? "metres" : "projets"); X().toast(w.debut === "rapide" ? "Choisissez un modèle et ajustez les lignes" : "Remplissez la fiche de votre chantier");
+    };
+  }
+
+  /* ---------------- Liste « Bien démarrer » ---------------- */
+  function etapes() {
+    var s = S(), e = s.ent, g = s.guide;
+    return [
+      ["Coordonnées de l'entreprise", !!(e.nom && e.tel), "params"],
+      ["NINEA et RCCM", !!(e.ninea && e.rccm), "params"],
+      ["Logo, signature et cachet", !!(e.logo && (e.signature || e.cachet)), "params"],
+      ["Régime fiscal choisi", !!g.regime, "params"],
+      ["Vos prix vérifiés dans la bibliothèque", !!g.prix, "prix:biblio"],
+      ["Premier vrai projet créé", s.projects.some(function (p) { return !estExemple(p); }), "projets"],
+      ["Projet exemple supprimé", !aExemple(), "supEx"],
+      ["Première sauvegarde", !!(s.sauvegarde && s.sauvegarde.derniere), "params"]
+    ];
+  }
+  function dashHTML() {
+    var s = S(); if (s.guide.masque || (window.SYNC && SYNC.estCollab())) return "";
+    var E = etapes(), ok = E.filter(function (x) { return x[1]; }).length; if (ok === E.length) return "";
+    return '<div class="card"><h2>Bien démarrer avec TABAX <span style="font-weight:400;color:#667;font-size:13px">' + ok + "/" + E.length + '</span></h2><div style="height:6px;background:#e6eaf1;border-radius:3px;margin:4px 0 10px"><div style="height:6px;border-radius:3px;background:#2e8b57;width:' + Math.round(100 * ok / E.length) + '%"></div></div><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:6px 18px">' +
+      E.map(function (x) { return '<div style="display:flex;align-items:center;gap:8px;padding:3px 0"><span style="width:20px;height:20px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;' + (x[1] ? "background:#2e8b57;color:#fff" : "border:2px solid #c3cad6") + '">' + (x[1] ? "✓" : "") + '</span><span style="flex:1;' + (x[1] ? "color:#889;text-decoration:line-through" : "") + '">' + x[0] + "</span>" + (x[1] ? "" : '<button class="btn sm" data-gg="' + x[2] + '">' + (x[2] === "supEx" ? "Supprimer" : "Faire") + "</button>") + "</div>"; }).join("") +
+      '</div><p style="margin:10px 0 0"><button class="btn sm" id="gAssist">Relancer l\'assistant</button> <button class="btn sm" id="gMasq">Masquer cette liste</button></p></div>';
+  }
+
+  /* ---------------- Branchement après chaque affichage ---------------- */
+  function apresRendu(page) {
+    var s = S(); s.guide = s.guide || {};
+    // bouton « ? »
+    var h1 = document.querySelector("#content .head h1");
+    if (h1 && AIDE[page] && !h1.querySelector(".gHelp")) {
+      var b = document.createElement("button"); b.className = "gHelp"; b.type = "button"; b.title = "Aide : à quoi sert cette page ?"; b.textContent = "?";
+      b.style.cssText = "margin-left:10px;width:26px;height:26px;border-radius:50%;border:1.5px solid #2b4a8c;background:#fff;color:#2b4a8c;font-weight:700;font-size:14px;cursor:pointer;vertical-align:middle";
+      b.onclick = function () { aide(page); }; h1.appendChild(b);
+    }
+    if (page === "prix" && (APP.X.ui.sub.prix === "biblio") && !s.guide.prix) { s.guide.prix = true; X().save(); }
+    if (page === "params" && !s.guide.regime && $("regSel")) $("regSel").addEventListener("change", function () { s.guide.regime = true; X().save(); });
+    // bouton « supprimer l'exemple » sur la page Projets
+    if (page === "projets" && aExemple()) { var bar = document.querySelector("#content .bar-btn"); if (bar && !$("supEx")) { var x = document.createElement("button"); x.className = "btn danger"; x.id = "supEx"; x.textContent = "Supprimer le projet exemple"; x.onclick = function () { if (x.dataset.c !== "1") { x.dataset.c = "1"; x.textContent = "Confirmer : supprimer l'exemple"; return; } supprimerExemples(); }; bar.appendChild(x); } }
+    // tableau de bord
+    document.querySelectorAll("[data-gg]").forEach(function (b) { b.onclick = function () { var v = b.dataset.gg; if (v === "supEx") return supprimerExemples(); var k = v.split(":"); X().go(k[0], k[1]); }; });
+    if ($("gAssist")) $("gAssist").onclick = function () { assistant(0); };
+    if ($("gMasq")) $("gMasq").onclick = function () { s.guide.masque = true; X().save(); X().renderPage(); };
+    if ($("gSupEx")) $("gSupEx").onclick = function () { supprimerExemples(); };
+    // premier lancement
+    if (!s.guide.vu && !dejaOuvert && !(window.SYNC && SYNC.estCollab()) && !/suivi=/.test(location.hash)) { dejaOuvert = true; setTimeout(function () { assistant(0); }, 300); }
+  }
+
+  return { apresRendu: apresRendu, dashHTML: dashHTML, aide: aide, assistant: assistant, supprimerExemples: supprimerExemples, AIDE: AIDE, fermer: fermer };
+})();
+if (typeof module !== "undefined") module.exports = GUIDE;
 </script>
 </body>
 </html>

@@ -108,7 +108,7 @@ var MOD = (function () {
     d0 = PL.addDays(d0, -3); d1 = PL.addDays(d1, 10);
     var nj = PL.diff(d0, d1) + 1, px = Math.max(2.5, Math.min(14, 820 / nj)), L = 270, rh = 24, W = L + nj * px + 10, H = 34 + T.length * rh + 8;
     var X0 = function (s) { return L + PL.diff(d0, s) * px; };
-    var s = '<svg class="gantt" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + " " + H + '">';
+    var s = '<svg class="gantt" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + " " + H + '"><defs><marker id="fl" viewBox="0 0 6 6" refX="5" refY="3" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#8a94a8"/></marker><marker id="flc" viewBox="0 0 6 6" refX="5" refY="3" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#c23b3b"/></marker></defs>';
     // hivernage + mois
     var d = d0;
     while (d <= d1) {
@@ -130,6 +130,17 @@ var MOD = (function () {
       if (t.pct) s += '<rect x="' + bx + '" y="' + (y + 2) + '" width="' + bw * t.pct / 100 + '" height="12" rx="2" class="done"/>';
       if (t.pa) s += '<text x="' + (bx + bw + 3) + '" y="' + (y + 12) + '" class="pa">◆</text>';
     });
+    if (opts.liens) {
+      var pos = {}, chn = {}; T.forEach(function (t, i) { pos[t.id] = i; }); (opts.chaine || []).forEach(function (id, i, a) { if (i) chn[a[i - 1] + ">" + id] = 1; });
+      T.forEach(function (t, i) {
+        (t.deps || []).forEach(function (dp) {
+          var j = pos[dp[0]]; if (j == null) return; var pr = T[j];
+          var x1 = X0(opts.prev ? pr.pFin : pr.fin) + px, y1 = 30 + j * rh + 8, x2 = X0(opts.prev ? t.pDebut : t.debut), y2 = 30 + i * rh + 8, c = chn[pr.id + ">" + t.id];
+          var xm = Math.max(x1 + 4, Math.min(x2 - 4, x1 + 10)), dPath = x2 - 6 >= x1 ? "M" + x1 + "," + y1 + " H" + xm + " V" + y2 + " H" + (x2 - 1) : "M" + x1 + "," + y1 + " h4 V" + (y2 - 10) + " H" + (x2 - 8) + " V" + y2 + " H" + (x2 - 1);
+          s += '<path d="' + dPath + '" class="lien' + (c ? " crit" : "") + '" marker-end="url(#' + (c ? "flc" : "fl") + ')"/>';
+        });
+      });
+    }
     var tj = jour();
     if (tj >= d0 && tj <= d1) s += '<line x1="' + X0(tj) + '" x2="' + X0(tj) + '" y1="18" y2="' + H + '" class="today"/><text x="' + (X0(tj) + 3) + '" y="27" class="tdl">aujourd\'hui</text>';
     if (opts.livraison) s += '<line x1="' + X0(opts.livraison) + '" x2="' + X0(opts.livraison) + '" y1="18" y2="' + H + '" class="livr"/><text x="' + (X0(opts.livraison) - 3) + '" y="27" text-anchor="end" class="lvl">livraison promise</text>';
@@ -147,16 +158,41 @@ var MOD = (function () {
       fld("Prendre en compte l'hivernage", "planning.hivernage", { check: true }, "De juillet à octobre, la productivité des travaux extérieurs est réduite.") + fld("Productivité en hivernage (0 à 1)", "planning.facteurHiv", {}, "0,75 = les travaux extérieurs avancent à 75 % de la normale.") + "</div>" +
       '<h2 style="margin-top:14px">Effectif affecté à ce chantier (par métier)</h2><div class="form">' + Object.keys(PL.EQUIPES).filter(function (k) { return k !== "CHEF"; }).map(function (k) { return fld(LIBM[k], "planning.equipes." + k); }).join("") + "</div></div>";
     h += '<div class="bar-btn"><button class="btn p" id="pdfGantt">Générer le PDF du planning</button><button class="btn" id="figer">' + (p.planning.ref ? "Mettre à jour le planning de référence" : "Figer comme planning de référence") + '</button><button class="btn" id="rstPl">Effacer les ajustements manuels</button>' + (p.planning.ref ? '<span class="hint">Référence figée : l\'OPC mesure les retards par rapport à elle.</span>' : "") + "</div>";
-    h += '<div class="card"><h2>Diagramme de Gantt</h2><div class="legend"><i class="lg bar"></i>tâche <i class="lg crit"></i>critique <i class="lg hiv"></i>hivernage <span class="pa">◆</span> point d\'arrêt qualité</div>' + gantt(T, { livraison: liv }) + "</div>";
-    h += '<div class="card"><h2>Tâches</h2><table class="t edit"><tr><th class="l">Tâche</th><th class="l">Métier principal</th><th>Journées</th><th>Durée calculée</th><th>Durée ajustée</th><th>Début imposé</th><th>Début</th><th>Fin</th><th>Marge</th></tr>';
+    h += cheminCritiqueHTML(p, r, pl);
+    var gOpt = X.ui.gantt = X.ui.gantt || { liens: true, crit: false }, TG = gOpt.crit ? T.filter(function (t) { return t.critique; }) : T;
+    h += '<div class="card"><h2>Diagramme de Gantt</h2><div class="legend"><i class="lg bar"></i>tâche <i class="lg crit"></i>critique <i class="lg hiv"></i>hivernage <span class="pa">◆</span> point d\'arrêt qualité <span style="margin-left:14px"><label><input type="checkbox" id="gLiens"' + (gOpt.liens ? " checked" : "") + '> liaisons entre tâches</label> <label style="margin-left:10px"><input type="checkbox" id="gCrit"' + (gOpt.crit ? " checked" : "") + "> seulement le chemin critique</label></span></div>" + gantt(TG, { livraison: liv, liens: gOpt.liens, chaine: pl.chaine }) + "</div>";
+    h += '<div class="card"><h2>Tâches</h2><table class="t edit"><tr><th class="l">Tâche</th><th class="l">Métier principal</th><th>Journées</th><th>Durée calculée</th><th>Durée ajustée</th><th>Début imposé</th><th>Début</th><th>Fin</th><th title="Retard possible sans décaler la livraison">Marge totale</th><th title="Retard possible sans décaler la tâche suivante">Marge libre</th></tr>';
     T.forEach(function (t) {
       var j = Object.keys(t.mo).reduce(function (s, k) { return s + t.mo[k]; }, 0), ov = p.planning.ov[t.id] || {};
-      h += '<tr class="' + (t.critique ? "critrow" : "") + '"><td class="l">' + esc(t.nom) + (t.conflit ? " " + X.esc("") + '<span class="badge rouge">conflit</span>' : "") + '</td><td class="l small">' + (t.metier ? LIBM[t.metier] + " × " + t.equipe : "—") + "</td><td>" + fmt(j) + "</td><td>" + t.durCalc + ' j</td><td><input type="number" min="1" data-pov="' + t.id + '|dur" value="' + (ov.dur || "") + '" placeholder="' + t.durCalc + '"></td><td><input type="date" data-pov="' + t.id + '|debut" value="' + (ov.debut || "") + '"></td><td>' + fr(t.debut) + "</td><td>" + fr(t.fin) + "</td><td>" + (t.critique ? badge("rouge", "critique") : t.marge + " j") + "</td></tr>";
+      h += '<tr class="' + (t.critique ? "critrow" : "") + '"><td class="l">' + esc(t.nom) + (t.conflit ? " " + X.esc("") + '<span class="badge rouge">conflit</span>' : "") + '</td><td class="l small">' + (t.metier ? LIBM[t.metier] + " × " + t.equipe : "—") + "</td><td>" + fmt(j) + "</td><td>" + t.durCalc + ' j</td><td><input type="number" min="1" data-pov="' + t.id + '|dur" value="' + (ov.dur || "") + '" placeholder="' + t.durCalc + '"></td><td><input type="date" data-pov="' + t.id + '|debut" value="' + (ov.debut || "") + '"></td><td>' + fr(t.debut) + "</td><td>" + fr(t.fin) + "</td><td>" + (t.critique ? badge("rouge", "critique") : t.marge + " j") + "</td><td>" + (t.critique ? "—" : t.margeLibre + " j") + "</td></tr>";
     });
-    return h + '</table><p class="hint">Durée ajustée : remplace la durée calculée. Début imposé : force la date de début. Si elle ne respecte pas les enchaînements (cure, séchage, tâches précédentes), le conflit est signalé ici et dans l\'OPC.</p></div>';
+    return h + '</table><p class="hint">Marges en jours ouvrés. Marge totale : retard possible sur la tâche sans décaler la livraison. Marge libre : retard possible sans gêner la tâche suivante. Durée ajustée : remplace la durée calculée. Début imposé : force la date de début. Si elle ne respecte pas les enchaînements (cure, séchage, tâches précédentes), le conflit est signalé ici et dans l\'OPC.</p></div>';
+  }
+  function cheminCritiqueHTML(p, r, pl) {
+    var idx = {}; pl.taches.forEach(function (t) { idx[t.id] = t; });
+    var ch = pl.chaine.map(function (id) { return idx[id]; }).filter(Boolean), tot = ch.reduce(function (a, t) { return a + t.dur; }, 0);
+    var chip = function (t, extra) { return '<span style="display:inline-block;margin:3px 0;padding:4px 8px;border-radius:6px;background:#fbe9e9;border:1px solid #e6b3b3;font-size:12.5px"><b>' + esc(t.nom) + "</b> · " + t.dur + " j" + (extra || "") + "</span>"; };
+    var h = '<div class="card"><h2>Chemin critique</h2><p class="hint">Suite de tâches sans aucune marge : chacune pilote la date de fin. <b>Un jour de retard sur l\'une d\'elles, c\'est un jour de retard sur la livraison</b>, sauf si vous rattrapez ailleurs sur ce même chemin. C\'est là que vous mettez vos meilleures équipes et que vous anticipez les commandes.</p>' +
+      '<div style="line-height:2">' + ch.map(function (t) { return chip(t); }).join(' <span style="color:#c23b3b">➜</span> ') + "</div>" +
+      '<p class="hint">' + ch.length + " tâches critiques sur " + pl.taches.length + ", soit " + tot + " jours ouvrés de travail enchaînés (les délais de cure et de séchage s\'y ajoutent).</p>";
+    if (p.statut === "chantier" && r.F && r.F.taches.some(function (t) { return t.pct > 0; })) {
+      var reel = PL.critiqueReel(r.F), idf = {}; r.F.taches.forEach(function (t) { idf[t.id] = t; });
+      var diffCh = reel.join(">") !== pl.chaine.filter(function (id) { return idf[id] && idf[id].pct < 100; }).join(">");
+      h += '<h3 style="margin:12px 0 4px">Chemin critique actuel (d\'après l\'avancement réel)</h3>' + (reel.length ? '<div style="line-height:2">' + reel.map(function (id) { var t = idf[id]; return chip(t, t.pct ? " · " + Math.round(t.pct) + " % fait" : ""); }).join(' <span style="color:#c23b3b">➜</span> ') + "</div>" : '<p class="hint">Toutes les tâches sont terminées.</p>') + (diffCh ? '<div class="note">Le chemin critique a changé depuis le planning de départ : certaines tâches prises en retard sont devenues critiques. Concentrez vos efforts sur celles-ci.</div>' : "");
+    }
+    var marges = pl.taches.filter(function (t) { return !t.critique; }).sort(function (a, b) { return b.marge - a.marge; }).slice(0, 6);
+    if (marges.length) h += '<h3 style="margin:12px 0 4px">Tâches qui ont de la marge (vous pouvez les décaler ou y prendre des ouvriers)</h3><table class="t"><tr><th class="l">Tâche</th><th>Marge totale</th><th>Marge libre</th></tr>' + marges.map(function (t) { return '<tr><td class="l">' + esc(t.nom) + "</td><td>" + t.marge + " j</td><td>" + t.margeLibre + " j</td></tr>"; }).join("") + "</table>";
+    var sim = X.ui.sim || {};
+    h += '<h3 style="margin:14px 0 4px">Et si… une tâche prend du retard ?</h3><div class="bar-btn"><select id="simT">' + pl.taches.map(function (t) { return '<option value="' + t.id + '"' + (sim.id === t.id ? " selected" : "") + ">" + esc(t.nom) + (t.critique ? " (critique)" : " (marge " + t.marge + " j)") + "</option>"; }).join("") + '</select><label>retard de <input type="number" id="simJ" min="1" value="' + (sim.j || 5) + '" style="width:60px"> jours ouvrés</label><button class="btn p" id="simGo">Calculer l\'impact</button></div>';
+    if (sim.res) { var s = sim.res; h += s.decalage > 0 ? '<div class="note rouge">La livraison passerait du <b>' + fr(s.finAvant) + "</b> au <b>" + fr(s.finApres) + "</b> : <b>" + s.decalage + " jours ouvrés de retard</b> (" + s.calendaire + " jours calendaires). Prévoyez un renfort d\'équipe ou une autre organisation pour cette tâche.</div>" : '<div class="note" style="background:#e8f5ee;border-color:#9bd3b5">Aucun impact sur la livraison (' + fr(s.finAvant) + ") : ce retard est absorbé par la marge de la tâche (" + s.marge + " jours ouvrés).</div>"; }
+    return h + "</div>";
   }
   function postPlanning() {
     var p = P();
+    var g = X.ui.gantt = X.ui.gantt || { liens: true, crit: false }, b;
+    if ((b = $("gLiens"))) b.onchange = function () { g.liens = this.checked; X.renderPage(); };
+    if ((b = $("gCrit"))) b.onchange = function () { g.crit = this.checked; X.renderPage(); };
+    if ((b = $("simGo"))) b.onclick = function () { var id = $("simT").value, j = Math.max(1, +$("simJ").value || 1); X.ui.sim = { id: id, j: j, res: PL.simulerRetard(p, Cc.dqe(p, X.ST()), id, j) }; X.renderPage(); };
     document.querySelectorAll("[data-pov]").forEach(function (el) {
       el.onchange = function () { var a = el.dataset.pov.split("|"); var o = p.planning.ov[a[0]] = p.planning.ov[a[0]] || {}; if (el.value === "") delete o[a[1]]; else o[a[1]] = a[1] === "dur" ? +el.value : el.value; X.save(); X.renderPage(); };
     });
@@ -258,15 +294,16 @@ var MOD = (function () {
     var cmd = [];
     r.F.taches.forEach(function (t) { if (t.pct === 0 && t.appro) t.appro.forEach(function (c) { cmd.push({ cle: t.id + "|" + c, cat: c, t: t, avant: PL.addDays(t.pDebut, -(PL.APPRO[c] || 7) - 2) }); }); });
     cmd.sort(function (a, b) { return a.avant < b.avant ? -1 : 1; });
-    h += '<div class="card"><h2>Commandes à passer</h2><table class="t"><tr><th class="l">Fourniture</th><th class="l">Pour la tâche</th><th>Délai</th><th>Commander avant le</th><th>Commandé</th></tr>' + cmd.map(function (c) {
+    h += '<div class="card"><h2>Commandes à passer</h2><table class="t"><tr><th class="l">Fourniture</th><th class="l">Pour la tâche</th><th>Délai</th><th>Commander avant le</th><th>Commandé</th>' + (window.CHT ? "<th></th>" : "") + "</tr>" + cmd.map(function (c) {
       var fait = p.opc.commandes[c.cle], k = PL.diff(j, c.avant);
-      return "<tr><td class='l'>" + esc(c.cat) + "</td><td class='l small'>" + esc(c.t.nom) + "</td><td>" + (PL.APPRO[c.cat] || 7) + " j</td><td>" + fr(c.avant) + " " + (fait ? "" : k < 0 ? badge("rouge", "en retard") : k <= 10 ? badge("orange", "dans " + k + " j") : "") + '</td><td><input type="checkbox" data-cmd="' + c.cle + '"' + (fait ? " checked" : "") + "></td></tr>";
+      return "<tr><td class='l'>" + esc(c.cat) + "</td><td class='l small'>" + esc(c.t.nom) + "</td><td>" + (PL.APPRO[c.cat] || 7) + " j</td><td>" + fr(c.avant) + " " + (fait ? "" : k < 0 ? badge("rouge", "en retard") : k <= 10 ? badge("orange", "dans " + k + " j") : "") + '</td><td><input type="checkbox" data-cmd="' + c.cle + '"' + (fait ? " checked" : "") + "></td>" + (window.CHT ? '<td><button class="btn sm" data-nbc="' + esc(c.cat) + '" data-nbt="' + esc(c.t.nom) + '" data-nbl="' + PL.addDays(c.t.pDebut, -2) + '">Bon de commande</button></td>' : "") + "</tr>";
     }).join("") + "</table></div>";
     return h;
   }
   function postGlis() {
     var p = P();
     document.querySelectorAll("[data-lk]").forEach(function (el) { el.onchange = function () { var a = el.dataset.lk.split("|"); p.opc.lookahead[a[0]] = p.opc.lookahead[a[0]] || {}; p.opc.lookahead[a[0]][a[1]] = el.checked; X.save(); }; });
+    document.querySelectorAll("[data-nbc]").forEach(function (b) { b.onclick = function () { p.opc.commandes[b.closest("tr").querySelector("[data-cmd]").dataset.cmd] = jour(); X.save(); CHT.nouveauBon(b.dataset.nbc, b.dataset.nbt, b.dataset.nbl); }; });
     document.querySelectorAll("[data-cmd]").forEach(function (el) { el.onchange = function () { if (el.checked) p.opc.commandes[el.dataset.cmd] = jour(); else delete p.opc.commandes[el.dataset.cmd]; X.save(); X.renderPage(); }; });
     var b = $("pdfGlis"); if (b) b.onclick = pdfGlissant;
   }
@@ -340,8 +377,9 @@ var MOD = (function () {
   }
   function pageTerrain() {
     var h = '<div class="head"><h1>Suivi terrain</h1><p>Vos collaborateurs remplissent ici le rapport de chantier, sur téléphone, même sans réseau, puis l\'envoient au bureau par WhatsApp. Au bureau, vous importez les rapports et tout se met à jour : avancement, alertes, consommations, comptes rendus.</p></div>';
-    h += (X.ui.sub.terrain = X.ui.sub.terrain || "rap", "") + X.tabs("terrain", [["rap", "Nouveau rapport"], ["hist", "Rapports reçus"], ["ech", "Échanges bureau ↔ chantier"]]);
+    h += (X.ui.sub.terrain = X.ui.sub.terrain || "rap", "") + X.tabs("terrain", [["rap", "Nouveau rapport"], ["hist", "Rapports reçus"], ["ech", "Échanges bureau ↔ chantier"]].concat(window.CHT ? [["plans", "Plans et réserves"]] : []));
     var sub = X.ui.sub.terrain || "rap";
+    if (sub === "plans" && window.CHT) return h + CHT.plansHTML();
     return h + ({ rap: terRapport, hist: terHist, ech: terEch }[sub] || terRapport)();
   }
   function terRapport() {
@@ -432,7 +470,7 @@ var MOD = (function () {
   function postTerrain() {
     if (!X.ui.sub.terrain) X.ui.sub.terrain = "rap";
     X.bindTabs("terrain");
-    var s = X.ui.sub.terrain; if (s === "rap") postRapport(); if (s === "hist") postHist(); if (s === "ech") postEch();
+    var s = X.ui.sub.terrain; if (s === "plans" && window.CHT) return CHT.postPlans(); if (s === "rap") postRapport(); if (s === "hist") postHist(); if (s === "ech") postEch();
     chargerVignettes();
   }
 
@@ -455,10 +493,11 @@ var MOD = (function () {
   }
   function pageFactu() {
     var h = '<div class="head"><h1>Finances et comptabilité</h1><p>Factures, situations de travaux, encaissements et dépenses du chantier, puis la comptabilité simplifiée de l\'entreprise : journal de caisse, frais généraux, TVA et résultat de l\'année expliqué simplement.</p></div>';
-    var onglets = [["docs", "Factures"], ["sit", "Nouvelle situation"], ["dep", "Dépenses du chantier"], ["treso", "Trésorerie prévisionnelle"]].concat(window.COMPTA ? COMPTA.TABS : []);
+    var onglets = [["docs", "Factures"], ["sit", "Nouvelle situation"], ["dep", "Dépenses du chantier"]].concat(window.CHT ? [["tach", "Tâcherons"]] : []).concat([["treso", "Trésorerie prévisionnelle"]]).concat(window.COMPTA ? COMPTA.TABS : []);
     h += (X.ui.sub.factu = X.ui.sub.factu || "docs", "") + X.tabs("factu", onglets);
     var sub = X.ui.sub.factu || "docs";
     if (window.COMPTA && COMPTA.TABS.some(function (t) { return t[0] === sub; })) return h + COMPTA.page(sub);
+    if (sub === "tach" && window.CHT) return h + CHT.tachHTML();
     return h + ({ docs: facDocs, sit: facSit, dep: facDep, treso: facTreso }[sub] || facDocs)();
   }
   function facDocs() {
@@ -529,6 +568,7 @@ var MOD = (function () {
     if (!X.ui.sub.factu) X.ui.sub.factu = "docs";
     X.bindTabs("factu");
     if (window.COMPTA && COMPTA.TABS.some(function (t) { return t[0] === X.ui.sub.factu; })) return COMPTA.post(X.ui.sub.factu);
+    if (X.ui.sub.factu === "tach" && window.CHT) return CHT.postTach();
     var p = P(), e = S().ent;
     var b;
     if ((b = $("figM"))) b.onclick = function () { figerMarche(p); X.save(); X.renderPage(); X.toast("Marché figé"); };
@@ -653,6 +693,17 @@ var MOD = (function () {
     if (p.info.dateLivraison) { doc.setDrawColor(178, 58, 58); doc.setLineWidth(0.4); doc.line(X0(p.info.dateLivraison), top - 6, X0(p.info.dateLivraison), yb); doc.setTextColor(178, 58, 58); doc.setFontSize(6.5); doc.text("Livraison promise", X0(p.info.dateLivraison) - 1, yb + 3, { align: "right" }); }
     if (prev) { doc.setDrawColor(27, 44, 92); doc.line(X0(jour()), top - 6, X0(jour()), yb); }
     doc.setTextColor(90, 90, 90); doc.setFontSize(7); doc.text(h.t("Barres rouges : tâches critiques · zone bleue : hivernage (productivité extérieure réduite)" + (prev ? " · trait foncé : avancement réalisé" : "")), L, Math.min(200, yb + 8));
+    // page « chemin critique »
+    var base = r.F.base, idx = {}; base.taches.forEach(function (t) { idx[t.id] = t; });
+    var chn = (prev ? PL.critiqueReel(r.F) : base.chaine).map(function (id) { return prev ? r.F.taches.filter(function (t) { return t.id === id; })[0] : idx[id]; }).filter(Boolean);
+    doc.addPage(); hdrL(doc, "CHEMIN CRITIQUE", sous);
+    doc.setFont("helvetica", "normal"); doc.setFontSize(9); doc.setTextColor(60, 60, 60);
+    doc.text(h.t("Tâches sans marge : un jour de retard sur l'une d'elles décale la livraison d'un jour. Marges exprimées en jours ouvrés."), 14, 38);
+    var tb = function (o) { doc.autoTable(Object.assign({ margin: { top: 36, bottom: 16, left: 14, right: 14 }, theme: "grid", styles: { font: "helvetica", fontSize: 7.5, cellPadding: 1.1, lineColor: [205, 210, 208], lineWidth: 0.15, textColor: [30, 30, 30] }, headStyles: { fillColor: [43, 74, 140], textColor: 255, fontStyle: "bold" }, didDrawPage: function (dd) { if (dd.pageNumber > 1 || doc.getNumberOfPages() > pg0) hdrL(doc, "CHEMIN CRITIQUE", sous); } }, o)); };
+    var pg0 = doc.getNumberOfPages();
+    tb({ startY: 42, head: [["N°", "Tâche critique", "Début", "Fin", "Durée (j ouvrés)", "Équipe"]], body: chn.map(function (t, i) { return [i + 1, h.t(t.nom), fr(prev ? t.pDebut : t.debut), fr(prev ? t.pFin : t.fin), t.dur, h.t(t.metier && LIBM[t.metier] ? t.equipe + " " + LIBM[t.metier].toLowerCase() : "-")]; }), headStyles: { fillColor: [178, 58, 58], textColor: 255, fontStyle: "bold" } });
+    var mg = base.taches.filter(function (t) { return !t.critique; });
+    if (mg.length) tb({ startY: doc.lastAutoTable.finalY + 6, head: [["Tâches avec marge", "Début", "Fin", "Marge totale (j)", "Marge libre (j)"]], body: mg.map(function (t) { return [h.t(t.nom), fr(t.debut), fr(t.fin), t.marge, t.margeLibre]; }) });
     footL(doc, titre); X.saveFile(doc.output("blob"), (prev ? "Planning_recale_" : "Planning_") + X.slug(p.info.nom) + ".pdf");
   }
   function hdrL(doc, titre, sous) {

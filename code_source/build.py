@@ -20,6 +20,9 @@ parts = {
     "/*COMPTA*/": rd("src/compta.js"),
     "/*SUPABASE*/": rd("vendor/sb/package/dist/umd/supabase.js"),
     "/*SYNC*/": rd("src/sync.js"),
+    "/*CHANTIER*/": rd("src/chantier.js"),
+    "/*HEBDO*/": rd("src/hebdo.js"),
+    "/*GUIDE*/": rd("src/guide.js"),
 }
 for k, v in parts.items():
     html = html.replace(k, v.replace("</script>", "<\\/script>"), 1)
