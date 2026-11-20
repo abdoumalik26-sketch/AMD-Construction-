@@ -13,6 +13,7 @@ parts = {
     "/*APP*/": rd("src/app.js"),
     "/*MODULES*/": rd("src/modules.js"),
     "/*TYPES*/": rd("src/types.js"),
+    "/*PILOTAGE*/": rd("src/pilotage.js"),
 }
 for k, v in parts.items():
     html = html.replace(k, v.replace("</script>", "<\\/script>"), 1)

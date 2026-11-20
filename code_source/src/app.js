@@ -2,7 +2,7 @@
    PILOTE BTP — interface
    ============================================================ */
 var APP = (function () {
-  var D = DATA, C = CALC, KEY = "piloteBTP_v1", VERSION = "2026.11.20-c";
+  var D = DATA, C = CALC, KEY = "piloteBTP_v1", VERSION = "2026.11.20-d";
   var S, ui = { page: "dash", sub: { metres: "fond", prix: "dqe" }, niv: 0, ouv: null, phase: "Toutes", ouvEdit: "3.4" };
   var $ = function (id) { return document.getElementById(id); };
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
@@ -25,6 +25,9 @@ var APP = (function () {
     if (!s.ouv) s.ouv = clone(D.OUV);
     Object.keys(D.OUV).forEach(function (k) { if (!s.ouv[k]) s.ouv[k] = clone(D.OUV[k]); });
     s.ent.capacite = Object.assign({}, D.ENTREPRISE.capacite, s.ent.capacite || {});
+    s.ent.productivite = s.ent.productivite || {};
+    s.appr = s.appr || { journal: [], ignore: {} }; s.appr.journal = s.appr.journal || []; s.appr.ignore = s.appr.ignore || {};
+    s.sauvegarde = s.sauvegarde || {};
     s.terrain = s.terrain || { moi: "" };
     s.projects.forEach(function (p) {
       p.overrides = p.overrides || {}; p.devis = p.devis || {}; p.opt = Object.assign({}, D.exemple().opt, p.opt || {});
@@ -39,7 +42,7 @@ var APP = (function () {
       p.suivi = p.suivi || {}; p.suivi.rapports = p.suivi.rapports || [];
       p.factu = p.factu || {}; p.factu.docs = p.factu.docs || []; p.factu.achats = p.factu.achats || [];
       p.memoire = p.memoire || {}; p.memoire.sections = p.memoire.sections || {};
-      p.mode = p.mode || "complet"; p.rapide = p.rapide || [];
+      p.mode = p.mode || "complet"; p.rapide = p.rapide || []; p.archive = !!p.archive;
       p.marche = Object.assign({ type: "prive", autorite: "etat", nomAutorite: "", ref: "", montantEstime: 0, dateDepot: "", heureDepot: "", validite: 90, tauxBE: 0, autres: "" }, p.marche || {}); p.marche.check = p.marche.check || {};
       p.reception = Object.assign({ num: "", date: new Date().toISOString().slice(0, 10), lieu: "", decision: "sans", delai: 30, ref: "", mo: "", moe: "", ent: "", obs: "" }, p.reception || {});
     });
@@ -52,6 +55,15 @@ var APP = (function () {
   function idbDel(st, k) { return new Promise(function (res) { if (!DB) return res(false); try { var tx = DB.transaction(st, "readwrite"); tx.objectStore(st).delete(k); tx.oncomplete = function () { res(true); }; } catch (e) { res(false); } }); }
   function photoPut(id, data) { MEMPH[id] = data; return idbPut("photos", id, data); }
   function photoGet(id) { if (MEMPH[id]) return Promise.resolve(MEMPH[id]); return idbGet("photos", id).then(function (v) { if (v) MEMPH[id] = v; return v; }); }
+  function photoAll() {
+    return new Promise(function (res) {
+      var out = {}; Object.keys(MEMPH).forEach(function (k) { out[k] = MEMPH[k]; });
+      if (!DB) return res(out);
+      try { var rq = DB.transaction("photos").objectStore("photos").openCursor(); rq.onsuccess = function () { var c = rq.result; if (c) { out[c.key] = c.value; c.continue(); } else res(out); }; rq.onerror = function () { res(out); }; } catch (e) { res(out); }
+    });
+  }
+  function kvGet(k) { return idbGet("kv", k); }
+  function kvPut(k, v) { return idbPut("kv", k, v); }
   function photoDel(id) { delete MEMPH[id]; return idbDel("photos", id); }
   function load() {
     return idbOpen().then(function (db) {
@@ -72,6 +84,7 @@ var APP = (function () {
       (DB ? idbPut("kv", "state", txt) : Promise.resolve(false)).then(function (ok) {
         if (!ok) { try { localStorage.setItem(KEY, txt); ok = true; } catch (e) {} }
         $("saveState").textContent = ok ? "Enregistré · " + heure : "⚠ Enregistrement impossible : exportez une sauvegarde";
+        if (ok && window.PIL) PIL.apresEnregistrement();
       });
     }, 200);
   }
@@ -115,7 +128,7 @@ var APP = (function () {
   var MENU = [
     ["dash", "Tableau de bord", "▦"], ["projets", "Projets", "▤"], ["metres", "Métrés / devis rapide", "⊞"], ["prix", "Études de prix", "₣"],
     ["planning", "Planning", "▭"], ["opc", "OPC et anticipation", "◎"], ["terrain", "Suivi terrain", "⚑"],
-    ["appro", "Approvisionnements", "⛟"], ["factu", "Facturation et trésorerie", "≡"], ["memoires", "Mémoires techniques", "✎"], ["params", "Paramètres", "⚙"]
+    ["appro", "Approvisionnements", "⛟"], ["factu", "Facturation et trésorerie", "≡"], ["memoires", "Mémoires techniques", "✎"], ["archives", "Archives, REX et apprentissage", "▣"], ["params", "Paramètres", "⚙"]
   ];
   function renderMenu() {
     $("menu").innerHTML = MENU.map(function (m) { return '<button data-p="' + m[0] + '" class="' + (ui.page === m[0] ? "on" : "") + '"><span class="ic">' + m[2] + "</span>" + m[1] + (m[3] ? '<em>' + m[3] + "</em>" : "") + "</button>"; }).join("");
@@ -125,7 +138,7 @@ var APP = (function () {
   function renderTop() {
     var br = $("brandName"); if (br) br.textContent = S.ent.nom || "Pilote BTP";
     var bl = $("brandLogo"); if (bl) { if (S.ent.logo) { bl.src = S.ent.logo; bl.style.display = "block"; } else bl.style.display = "none"; }
-    $("projSel").innerHTML = S.projects.map(function (p) { return '<option value="' + p.id + '"' + (p.id === S.active ? " selected" : "") + ">" + esc(p.info.nom) + "</option>"; }).join("");
+    $("projSel").innerHTML = S.projects.filter(function (p) { return !p.archive || p.id === S.active; }).map(function (p) { return '<option value="' + p.id + '"' + (p.id === S.active ? " selected" : "") + ">" + esc(p.info.nom) + "</option>"; }).join("");
   }
   function go(page, sub) { ui.page = page; if (sub) ui.sub[page] = sub; renderMenu(); renderPage(); window.scrollTo(0, 0); try { history.replaceState(null, "", "#" + page); } catch (e) {} }
   function tabs(page, list) {
@@ -150,6 +163,7 @@ var APP = (function () {
     var marge = q.ht - q.ds;
     var maxPh = Math.max.apply(null, q.phases.map(function (x) { return x.total; }).concat([1]));
     var h = '<div class="head"><h1>Tableau de bord</h1><p>Projet actif : <b>' + esc(p.info.nom) + "</b> · " + esc(p.info.client || "client non renseigné") + " · " + esc(p.info.ville || p.info.region) + "</p></div>";
+    if (window.PIL) h += PIL.dashHTML();
     if (S.demo) h += '<div class="note">Le projet « Villa R+1 – exemple » est <b>fictif</b>, avec des prix <b>indicatifs</b>. Créez votre projet dans <a href="#" data-go="projets">Projets</a> et mettez vos prix réels dans <a href="#" data-go="prix:biblio">Études de prix › Bibliothèque</a>.</div>';
     h += '<div class="kpis">' + kpi("Montant TTC", fmt(q.ttc), "FCFA · HT " + fmt(q.ht)) + kpi("Coût au m²", fmt(q.surface ? q.ttc / q.surface : 0), "FCFA TTC / m² de plancher (" + fmt(q.surface) + " m²)") +
       kpi("Déboursé sec", fmt(q.ds), "FCFA · coefficient K = " + q.k.toFixed(3)) + kpi("Marge brute prévue", fmt(marge), "FCFA · " + fmt(q.ht ? 100 * marge / q.ht : 0, 1) + " % du HT") +
@@ -158,7 +172,7 @@ var APP = (function () {
     h += '<div class="grid2"><div class="card"><h2>Montant par phase (HT)</h2>' + q.phases.map(function (ph) {
       return '<div class="bar"><span>' + esc(ph.nom) + '</span><div><i style="width:' + (100 * ph.total / maxPh) + '%"></i></div><b>' + fmt(ph.total / 1e6, 2) + " M</b></div>";
     }).join("") + '</div><div class="card"><h2>Mes projets</h2><table class="t"><tr><th class="l">Projet</th><th class="l">Ville</th><th>Surface</th><th>TTC (FCFA)</th><th>FCFA/m²</th></tr>' +
-      S.projects.map(function (x) { var qx = C.dqe(x, ST()); return '<tr class="click" data-open="' + x.id + '"><td class="l">' + esc(x.info.nom) + (x.id === S.active ? " <span class='tag'>actif</span>" : "") + '</td><td class="l">' + esc(x.info.ville || x.info.region) + "</td><td>" + fmt(qx.surface) + " m²</td><td>" + fmt(qx.ttc) + "</td><td>" + fmt(qx.surface ? qx.ttc / qx.surface : 0) + "</td></tr>"; }).join("") +
+      S.projects.filter(function (x) { return !x.archive; }).map(function (x) { var qx = C.dqe(x, ST()); return '<tr class="click" data-open="' + x.id + '"><td class="l">' + esc(x.info.nom) + (x.id === S.active ? " <span class='tag'>actif</span>" : "") + '</td><td class="l">' + esc(x.info.ville || x.info.region) + "</td><td>" + fmt(qx.surface) + " m²</td><td>" + fmt(qx.ttc) + "</td><td>" + fmt(qx.surface ? qx.ttc / qx.surface : 0) + "</td></tr>"; }).join("") +
       "</table></div></div>";
     h += (window.MOD && MOD.engagementsHTML) ? MOD.engagementsHTML(true) : "";
     return h;
@@ -409,7 +423,7 @@ var APP = (function () {
     if (!p.devis.num) p.devis.num = "D-" + new Date().getFullYear() + "-" + String(S.projects.indexOf(p) + 1).padStart(3, "0");
     if (p.devis.mode == null) p.devis.mode = "detail";
     if (p.devis.echeancier == null) p.devis.echeancier = true;
-    var h = '<div class="bar-btn"><button class="btn p" id="pdfDevis">Générer le PDF du devis</button></div>';
+    var h = '<div class="bar-btn"><button class="btn p" id="pdfDevis">Générer le PDF du devis</button><button class="btn" id="waDevis">Envoyer au client par WhatsApp</button></div>';
     h += '<div class="card"><h2>Paramètres du devis</h2><div class="form">' + fld("N° du devis", "devis.num", { text: true }) + fld("Objet", "devis.objet", { text: true, ph: "Construction d'une villa R+1" }) +
       fld("Présentation", "devis.mode", { options: [["detail", "Détaillée (toutes les lignes)"], ["lots", "Récapitulatif par lot"]] }) + fld("Échéancier de paiement par phase", "devis.echeancier", { check: true }) +
       '</div><label class="f wide"><span>Conditions particulières (laisser vide = conditions par défaut des Paramètres)</span>' + inp("devis.conditions", { area: true, rows: 3 }) + "</label></div>";
@@ -426,7 +440,7 @@ var APP = (function () {
   function echTable(q) {
     return '<table class="t"><tr><th class="l">Échéance</th><th>%</th><th>Montant TTC</th></tr>' + echeancier(q).map(function (r) { return '<tr><td class="l">' + esc(r[0]) + "</td><td>" + fmt(100 * r[1] / q.ttc, 1) + " %</td><td>" + fmt(r[1]) + "</td></tr>"; }).join("") + "</table>";
   }
-  POSTPRIX.devis = function () { $("pdfDevis").onclick = function () { PDF.devis(); }; };
+  POSTPRIX.devis = function () { $("pdfDevis").onclick = function () { PDF.devis(); }; $("waDevis").onclick = function () { var p = P(), q = Q(); if (window.PIL) PIL.envoyer(function () { PDF.devis(); }, p.info.tel, "Bonjour" + (p.info.client ? " " + p.info.client : "") + ", veuillez trouver ci-joint notre devis n° " + (p.devis.num || "") + " pour « " + (p.devis.objet || p.info.nom) + " », d'un montant de " + fmt(q.ttc) + " FCFA TTC. Je reste à votre disposition pour en discuter. Cordialement, " + S.ent.responsable + " – " + S.ent.nom + "."); }; };
   function prixBiblio() {
     var cat = C.catalogue(ST(), P().info.region);
     var h = '<div class="note">Base de prix <b>Dakar</b>, en FCFA HT. Les matériaux sont multipliés par le coefficient de la région du projet (' + esc(P().info.region) + " : ×" + cat.coef.toFixed(2) + "). Ciment, fer, sable et gravier : moyennes ANSD 2026 ; autres prix : ordres de grandeur à remplacer par vos prix fournisseurs et tâcherons.</div>";
@@ -486,7 +500,8 @@ var APP = (function () {
     h += '<div class="card"><table class="t"><tr><th class="l">Matériau</th><th>Quantité</th><th class="l">En unités d\'achat</th><th>P.U. estimé</th><th>Montant estimé</th></tr>';
     rows.forEach(function (k) { var r = cat.res[k], m = data[k] * r.p; tot += m; h += '<tr><td class="l">' + esc(r.d) + "</td><td>" + fmt(data[k], r.u === "u" || r.u === "pt" ? 0 : 2) + " " + esc(r.u) + '</td><td class="l">' + esc(C.unitesAchat(k, data[k], S.ent) || "") + "</td><td>" + fmt(r.p) + "</td><td>" + fmt(m) + "</td></tr>"; });
     h += '<tr class="tot"><td colspan="4" class="l">Total matériaux estimé (HT, prix ' + esc(P().info.region) + ")</td><td>" + fmt(tot) + "</td></tr></table></div>";
-    h += '<div class="card"><h2>Main-d\'œuvre totale du projet (journées)</h2><table class="t"><tr><th class="l">Métier</th><th>Journées</th><th>Coût estimé</th></tr>' + Object.keys(b.mo).map(function (k) { return '<tr><td class="l">' + esc(cat.res[k].d) + "</td><td>" + fmt(b.mo[k]) + "</td><td>" + fmt(b.mo[k] * cat.res[k].p) + "</td></tr>"; }).join("") + "</table><p class='hint'>Ces journées serviront à calculer les durées du planning (V2).</p></div>";
+    if (window.PIL) h += PIL.fournisseursHTML();
+    h += '<div class="card"><h2>Main-d\'œuvre totale du projet (journées)</h2><table class="t"><tr><th class="l">Métier</th><th>Journées</th><th>Coût estimé</th></tr>' + Object.keys(b.mo).map(function (k) { return '<tr><td class="l">' + esc(cat.res[k].d) + "</td><td>" + fmt(b.mo[k]) + "</td><td>" + fmt(b.mo[k] * cat.res[k].p) + "</td></tr>"; }).join("") + "</table><p class='hint'>Ces journées servent à calculer les durées du planning (cadences apprises comprises).</p></div>";
     return h;
   };
   POST.appro = function () { $("phSel").onchange = function () { ui.phase = this.value; renderPage(); }; $("pdfBC").onclick = function () { PDF.commande(ui.phase); }; };
@@ -513,7 +528,7 @@ var APP = (function () {
     h += '<div class="card"><h2>Effectif disponible de l\'entreprise (tous chantiers)</h2><div class="form">' + Object.keys(PLAN.CAPACITE).map(function (k) { return fld(PLAN.LIB[k].charAt(0).toUpperCase() + PLAN.LIB[k].slice(1), "capacite." + k, e); }).join("") +
       '</div><p class="hint">Le moteur d\'anticipation compare ces effectifs aux besoins de tous les chantiers en cours, jour par jour, et vous prévient des surcharges.</p></div>';
     h += '<div class="card"><h2>Version de l\'application</h2><p>' + VERSION + (location.protocol === "file:" ? ' — <b>fichier local</b> : il ne se met pas à jour tout seul. Utilisez l\'adresse en ligne de l\'application pour recevoir les mises à jour automatiquement.' : " — mises à jour automatiques activées (dès qu'il y a internet).") + "</p></div>";
-    h += '<div class="card"><h2>Sauvegardes</h2><p class="hint">Vos données sont enregistrées automatiquement dans ce navigateur. Exportez régulièrement une sauvegarde : c\'est elle qui vous permet de changer d\'ordinateur ou d\'envoyer un projet.</p><div class="bar-btn"><button class="btn p" id="expJ">Exporter une sauvegarde (.json)</button><label class="btn">Importer une sauvegarde<input type="file" id="impJ" accept=".json,application/json" hidden></label><button class="btn danger" id="rstAll">Tout réinitialiser</button></div></div>';
+    h += window.PIL ? PIL.sauvegardeHTML() : "";
     return h;
   };
   function updateK() { var e = $("kVal"); if (e) e.textContent = C.K(S.ent).toFixed(3); }
@@ -534,12 +549,7 @@ var APP = (function () {
       }; rd.readAsDataURL(f);
     };
     var ld = $("logoDel"); if (ld) ld.onclick = function () { S.ent.logo = ""; S.ent.logoRetire = true; save(); renderPage(); };
-    $("expJ").onclick = function () { saveFile(new Blob([JSON.stringify(S, null, 1)], { type: "application/json" }), "pilote-btp-sauvegarde-" + new Date().toISOString().slice(0, 10) + ".json"); };
-    $("impJ").onchange = function () {
-      var f = this.files[0]; if (!f) return; var rd = new FileReader();
-      rd.onload = function () { try { var s = JSON.parse(rd.result); if (!s.projects) throw "format"; S = migrate(s); save(); renderTop(); renderPage(); toast("Sauvegarde importée : " + S.projects.length + " projet(s)"); } catch (e) { toast("Fichier invalide"); } };
-      rd.readAsText(f);
-    };
+    if (window.PIL) PIL.postSauvegarde();
     $("rstAll").onclick = function () { var b = $("rstAll"); if (b.dataset.c !== "1") { b.dataset.c = "1"; b.textContent = "Confirmer : tout effacer"; return; } S = migrate(defState()); save(); renderTop(); renderPage(); toast("Application réinitialisée"); };
   };
 
@@ -560,6 +570,7 @@ var APP = (function () {
   /* ---------------- Fichiers ---------------- */
   function slug(s) { return String(s || "projet").normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 40); }
   function saveFile(blob, name) {
+    if (ui.envoi && window.PIL) { var env = ui.envoi; ui.envoi = null; return PIL.partagerFichier(blob, name, env); }
     if (window.claude && typeof window.claude.use === "function") {
       window.claude.use("downloads").then(function (dl) {
         if (!dl) return anchorSave(blob, name);
@@ -765,6 +776,6 @@ var APP = (function () {
   function reg(page, render, post) { PAGES[page] = render; if (post) POST[page] = post; }
   return { init: init, reg: reg, _state: function () { return S; }, _pdf: function () { return PDF; },
     X: { P: P, ST: ST, Q: Q, S: function () { return S; }, setS: function (s) { S = migrate(s); }, migrate: migrate, save: save, renderPage: renderPage, renderTop: renderTop, renderMenu: renderMenu, go: go, fmt: fmt, fq: fq, esc: esc, inp: inp, fld: fld, bindAll: bindAll,
-      tabs: tabs, bindTabs: bindTabs, toast: toast, saveFile: saveFile, slug: slug, clone: clone, ui: ui, kpi: kpi, photoPut: photoPut, photoGet: photoGet, photoDel: photoDel, echeancier: echeancier, linkGo: linkGo } };
+      tabs: tabs, bindTabs: bindTabs, toast: toast, saveFile: saveFile, slug: slug, clone: clone, ui: ui, kpi: kpi, photoPut: photoPut, photoGet: photoGet, photoDel: photoDel, photoAll: photoAll, kvGet: kvGet, kvPut: kvPut, setStateRaw: function (s) { S = migrate(s); }, VERSION: VERSION, echeancier: echeancier, linkGo: linkGo } };
 })();
 document.addEventListener("DOMContentLoaded", APP.init);

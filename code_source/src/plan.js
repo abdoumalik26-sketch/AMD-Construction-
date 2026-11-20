@@ -111,7 +111,7 @@ var PLAN = (function () {
           ligneTache[l.id] = ligneTache[l.id] || []; ligneTache[l.id].push([tk.id, fr]);
           mt += l.m * fr; ds += l.q * l.ds * fr;
           var o = cat.ouv[l.code]; if (!o) return;
-          o.c.forEach(function (c) { var r = cat.res[c[0]]; if (r && r.cat === "MO") mo[r.code] = (mo[r.code] || 0) + l.q * c[1] * fr; });
+          o.c.forEach(function (c) { var r = cat.res[c[0]]; if (r && r.cat === "MO") mo[r.code] = (mo[r.code] || 0) + l.q * c[1] * fr * (r.prod || 1); });
         });
       });
       var dur = 0, princ = null;
@@ -231,6 +231,8 @@ var PLAN = (function () {
     var A = [], charges = {};
     function add(niv, p, type, msg, quand) { A.push({ niv: niv, projet: p.info.nom, pid: p.id, type: type, msg: msg, quand: quand || jour }); }
     projets.forEach(function (p) {
+      if (p.archive) return;
+      relances(p, jour, ent, add);
       if ((p.statut || "etude") !== "chantier") return;
       var q = C.dqe(p, st), F = prevision(p, q, jour), cfg = F.cfg, i = p.info || {};
       // 1. livraison
@@ -284,6 +286,10 @@ var PLAN = (function () {
       var sit = ((p.factu || {}).docs || []).filter(function (d) { return d.type === "situation"; });
       var derniere = sit.reduce(function (m, d) { return maxS(m, d.date); }, null);
       if (F.avancement >= 5 && (!derniere || diff(derniere, jour) > 30)) add("orange", p, "Facturation", "Avancement global " + Math.round(F.avancement) + " % : pensez à établir une situation de travaux" + (derniere ? " (dernière le " + fr(derniere) + ")" : "") + ".");
+      // 11. dérive des dépenses par lot
+      ecartsLots(p, q, F).forEach(function (x) {
+        if (x.reel > 100000 && x.reel > x.prevu * 1.1) add(x.reel > x.prevu * 1.25 ? "rouge" : "orange", p, "Coûts", "Lot « " + x.nom + " » : " + Math.round(x.reel).toLocaleString("fr-FR") + " FCFA dépensés pour " + Math.round(x.prevu).toLocaleString("fr-FR") + " FCFA prévus à cet avancement (+" + Math.round(100 * (x.reel / Math.max(1, x.prevu) - 1)) + " %).");
+      });
     });
     // 10. surcharge d'équipes multi-chantiers
     var cap = Object.assign({}, CAPACITE, (ent || {}).capacite || {}), vu = {};
@@ -296,6 +302,24 @@ var PLAN = (function () {
     });
     var ordre = { rouge: 0, orange: 1, info: 2 };
     return A.sort(function (a, b) { return ordre[a.niv] - ordre[b.niv] || (a.quand < b.quand ? -1 : 1); });
+  }
+  // Factures échues non payées (tous projets non archivés)
+  function relances(p, jour, ent, add) {
+    var dl = n((ent || {}).delaiPaiement) || 30;
+    (((p.factu || {}).docs) || []).forEach(function (d) {
+      var du = d.type === "situation" ? n(d.net) : n(d.ttc), paye = (d.paiements || []).reduce(function (s, x) { return s + n(x.mt); }, 0), ech = addDays(d.date, dl);
+      if (du - paye > 1 && ech < jour) { var j = diff(ech, jour); add(j > 15 ? "rouge" : "orange", p, "Paiement", "Facture " + d.num + " : " + Math.round(du - paye).toLocaleString("fr-FR") + " FCFA impayés, échue depuis " + j + " jours (le " + fr(ech) + "). Relancez le client (Facturation › Relancer).", ech); }
+    });
+  }
+  // Dépenses réelles par lot vs déboursé prévu à l'avancement
+  function ecartsLots(p, q, F) {
+    var prevu = {}, budget = {}, reel = {}, lig = {};
+    q.lignes.forEach(function (l) { lig[l.id] = l; budget[l.lot] = (budget[l.lot] || 0) + l.q * l.ds; });
+    F.taches.forEach(function (t) { (t.lignesDQE || []).forEach(function (ln) { var l = lig[ln.id]; if (l) prevu[l.lot] = (prevu[l.lot] || 0) + l.q * l.ds * ln.fr * t.pct / 100; }); });
+    (((p.factu || {}).achats) || []).forEach(function (a) { if (a.lot) reel[a.lot] = (reel[a.lot] || 0) + n(a.mt); });
+    ((p.suivi || {}).rapports || []).forEach(function (r) { (r.dep || []).forEach(function (d) { if (d.lot) reel[d.lot] = (reel[d.lot] || 0) + n(d.mt); }); });
+    var D = (typeof DATA !== "undefined" && DATA.LOTS) || [];
+    return Object.keys(budget).map(function (k) { var L = D.filter(function (x) { return x[0] === k; })[0]; return { lot: k, nom: L ? L[1] : k, budget: budget[k], prevu: prevu[k] || 0, reel: reel[k] || 0 }; });
   }
   var LIB = { MAC: "maçons", FER: "ferrailleurs", COFR: "coffreurs", MAN: "manœuvres", CARR: "carreleurs", PEIN: "peintres", PLOM: "plombiers", ELEC: "électriciens", MEN: "menuisiers", ETANC: "étancheurs", CHEF: "chefs d'équipe" };
   function fr(s) { if (!s) return "—"; var a = s.split("-"); return a[2] + "/" + a[1] + "/" + a[0]; }
@@ -346,6 +370,6 @@ var PLAN = (function () {
   }
 
   return { d2s: d2s, s2d: s2d, addDays: addDays, diff: diff, fr: fr, ouvre: ouvre, finTravail: finTravail, cfgOf: cfgOf, EQUIPES: EQUIPES, APPRO: APPRO, CAPACITE: CAPACITE, LIB: LIB,
-    taches: taches, planifier: planifier, prevision: prevision, avancements: avancements, besoinsTache: besoinsTache, consommations: consommations, alertes: alertes, situation: situation, tresorerie: tresorerie, pctPrevu: pctPrevu };
+    taches: taches, planifier: planifier, prevision: prevision, ecartsLots: ecartsLots, prochainOuvre: prochainOuvre, joursOuvres: joursOuvres, avancements: avancements, besoinsTache: besoinsTache, consommations: consommations, alertes: alertes, situation: situation, tresorerie: tresorerie, pctPrevu: pctPrevu };
 })();
 if (typeof module !== "undefined") module.exports = PLAN;

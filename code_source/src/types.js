@@ -14,6 +14,38 @@ var TYP = (function () {
   function uid() { return "r" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5); }
 
   /* ---------------- PETITS TRAVAUX ---------------- */
+  // Modèles : x = paramètre saisi. Ligne : [code ou "", quantité(x), désignation, unité, lot, PU libre(x), jours]
+  var MODELES = [
+    { id: "sdb", nom: "Rénovation de salle de bain", param: "Surface au sol (m²)", def: 5, lignes: [
+      ["", function () { return 1; }, "Dépose de l'existant et évacuation des gravats", "FF", "L12", function (x) { return 40000 + 8000 * x; }, 2],
+      ["9.7", function () { return 3; }], ["9.8", function () { return 3; }], ["8.1", function (x) { return x; }], ["8.3", function (x) { return Math.round(4 * Math.sqrt(x) * 2.1); }],
+      ["9.1", function () { return 1; }], ["9.2", function () { return 1; }], ["9.3", function () { return 1; }], ["10.1", function () { return 1; }], ["11.2", function (x) { return x; }]] },
+    { id: "carr", nom: "Carrelage d'une pièce", param: "Surface au sol (m²)", def: 20, lignes: [
+      ["", function () { return 1; }, "Dépose de l'ancien revêtement et préparation du support", "FF", "L8", function (x) { return 15000 + 1500 * x; }, 1],
+      ["8.1", function (x) { return x; }], ["8.4", function (x) { return Math.round(4 * Math.sqrt(x)); }]] },
+    { id: "pein", nom: "Peinture d'un logement", param: "Surface habitable (m²)", def: 80, lignes: [
+      ["", function () { return 1; }, "Protection, rebouchage et ponçage des supports", "FF", "L11", function (x) { return 500 * x; }, 1],
+      ["11.1", function (x) { return Math.round(x * 2.7); }], ["11.2", function (x) { return x; }]] },
+    { id: "clot", nom: "Mur de clôture avec portail", param: "Longueur (ml)", def: 30, lignes: [
+      ["12.3", function (x) { return x; }], ["5.2", function (x) { return Math.round(x * 2.5 * 2); }], ["11.3", function (x) { return Math.round(x * 2.5 * 2); }],
+      ["", function () { return 1; }, "Portail métallique 300×200, y compris pose et peinture", "u", "L7", function () { return 450000; }, 2]] },
+    { id: "etan", nom: "Réfection d'étanchéité de terrasse", param: "Surface de la terrasse (m²)", def: 100, lignes: [
+      ["", function () { return 1; }, "Dépose de l'ancienne étanchéité et nettoyage du support", "FF", "L4", function (x) { return 800 * x; }, 2],
+      ["4.1", function (x) { return x; }], ["4.2", function (x) { return x; }], ["4.3", function (x) { return Math.max(1, Math.ceil(x / 50)); }]] },
+    { id: "cuis", nom: "Aménagement de cuisine (évier, faïence, prises)", param: "Longueur du plan de travail (ml)", def: 3, lignes: [
+      ["", function (x) { return x; }, "Plan de travail maçonné et carrelé", "ml", "L8", function () { return 45000; }, 2],
+      ["9.4", function () { return 1; }], ["9.7", function () { return 1; }], ["9.8", function () { return 1; }], ["8.3", function (x) { return Math.round(x * 0.6 * 10) / 10; }], ["10.2", function () { return 4; }], ["10.1", function () { return 1; }]] },
+    { id: "elec", nom: "Rénovation électrique", param: "Nombre de pièces", def: 4, lignes: [
+      ["10.1", function (x) { return Math.ceil(x * 1.5); }], ["10.2", function (x) { return x * 3; }], ["10.3", function (x) { return x; }], ["10.5", function () { return 1; }], ["10.6", function () { return 1; }]] }
+  ];
+  function ajouterModele(p, m, x) {
+    m.lignes.forEach(function (L) {
+      var code = L[0], o = code && S().ouv[code];
+      if (code && !o) return;
+      p.rapide.push(o ? { id: uid(), code: code, lot: o.lot, d: "", loc: m.nom, u: o.u, q: L[1](x), pu: "", jours: "" }
+        : { id: uid(), code: "", lot: L[4], d: L[2], loc: m.nom, u: L[3], q: L[1](x), pu: Math.round(L[5](x) / 500) * 500, jours: L[6] || 1 });
+    });
+  }
   function pageRapide() {
     var p = P(), q = X.Q(), parId = {}, ouv = S().ouv;
     q.lignes.forEach(function (l) { parId[l.id] = l; });
@@ -43,7 +75,8 @@ var TYP = (function () {
     });
     h += "</table>" + (!(p.rapide || []).length ? '<p class="hint">Aucune ligne. Ajoutez un ouvrage de la bibliothèque ou une ligne libre.</p>' : "") +
       '<div class="bar-btn" style="margin-top:10px"><button class="btn p" id="addRL">+ Ouvrage de la bibliothèque</button><button class="btn" id="addRF">+ Ligne libre</button></div>' +
-      '<p class="hint">P.U. vide = prix calculé par la bibliothèque (déboursé × K). « Jours » = durée estimée ; vide = calculée à partir de la main-d\'œuvre.</p></div>';
+      '<div class="bar-btn" style="margin-top:6px"><label>Modèle prêt à l\'emploi : <select id="modSel">' + MODELES.map(function (m) { return '<option value="' + m.id + '"' + (X.ui.mod === m.id ? " selected" : "") + ">" + esc(m.nom) + "</option>"; }).join("") + '</select></label><label id="modLab">' + esc((MODELES.filter(function (m) { return m.id === X.ui.mod; })[0] || MODELES[0]).param) + ' <input type="number" id="modX" step="any" style="width:80px" value="' + (MODELES.filter(function (m) { return m.id === X.ui.mod; })[0] || MODELES[0]).def + '"></label><button class="btn" id="modAdd">Ajouter ce modèle au devis</button></div>' +
+      '<p class="hint">P.U. vide = prix calculé par la bibliothèque (déboursé × K). « Jours » = durée estimée ; vide = calculée à partir de la main-d\'œuvre. Les prix des lignes libres des modèles sont indicatifs : ajustez-les.</p></div>';
     h += '<div class="grid2"><div class="card"><h2>Total</h2><table class="t"><tr><td class="l">Total HT</td><td><b>' + fmt(q.ht) + "</b> FCFA</td></tr><tr><td class='l'>TVA " + S().ent.tva + " %</td><td>" + fmt(q.tva) + " FCFA</td></tr><tr><td class='l'><b>Total TTC</b></td><td><b>" + fmt(q.ttc) + "</b> FCFA</td></tr><tr><td class='l'>Marge brute prévue</td><td>" + fmt(q.ht - q.ds) + " FCFA</td></tr></table>" +
       '<div class="bar-btn" style="margin-top:10px"><a class="btn p" href="#" data-go="prix:devis">Préparer le devis client (PDF) →</a></div></div>' +
       '<div class="card"><h2>Bonnes pratiques petits travaux</h2><ul class="hint" style="line-height:1.6;margin:0;padding-left:18px"><li>Faites signer le devis « bon pour accord » avant de commencer.</li><li>Encaissez l\'acompte prévu dans les Paramètres (' + S().ent.acompte + ' %).</li><li>Prenez des photos avant et après (Suivi terrain).</li><li>Terminez par un procès-verbal de réception signé (OPC › Réception).</li><li>Travaux de gros œuvre, clôture de plus de 2 m ou modification de façade : vérifiez l\'autorisation de construire à la mairie.</li></ul></div></div>';
@@ -53,6 +86,8 @@ var TYP = (function () {
     var p = P();
     X.linkGo();
     $("addRL").onclick = function () { var k = "8.1", o = S().ouv[k]; p.rapide.push({ id: uid(), code: k, lot: o.lot, d: "", loc: "", u: o.u, q: 1, pu: "", jours: "" }); X.save(); X.renderPage(); };
+    $("modSel").onchange = function () { X.ui.mod = this.value; X.renderPage(); };
+    $("modAdd").onclick = function () { var m = MODELES.filter(function (x) { return x.id === $("modSel").value; })[0], x = parseFloat($("modX").value) || m.def; ajouterModele(p, m, x); X.save(); X.renderPage(); X.toast("Modèle « " + m.nom + " » ajouté : ajustez les quantités et les prix"); };
     $("addRF").onclick = function () { p.rapide.push({ id: uid(), code: "", lot: "L12", d: "", loc: "", u: "FF", q: 1, pu: 0, jours: 1 }); X.save(); X.renderPage(); };
     document.querySelectorAll("[data-rcode]").forEach(function (el) {
       el.onchange = function () { var r = p.rapide[+el.dataset.rcode], o = S().ouv[el.value]; r.code = el.value; if (o) { r.lot = o.lot; r.u = o.u; r.pu = ""; } X.save(); X.renderPage(); };

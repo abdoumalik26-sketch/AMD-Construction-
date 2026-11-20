@@ -167,10 +167,10 @@ var CALC = (function () {
 
   // ---------------------------------------------------------------- PRIX
   function catalogue(st, region) {
-    var coef = (D.REGIONS[region] || [1])[0];
+    var coef = (D.REGIONS[region] || [1])[0], prod = ((st.ent || {}).productivite) || {};
     var res = {};
     (st.res || D.RES).forEach(function (r) {
-      res[r[0]] = { code: r[0], d: r[1], u: r[2], p0: r[3], cat: r[4], perte: r[5], p: r[4] === "MAT" ? r[3] * coef : r[3] };
+      res[r[0]] = { code: r[0], d: r[1], u: r[2], p0: r[3], cat: r[4], perte: r[5], p: r[4] === "MAT" ? r[3] * coef : r[3], prod: r[4] === "MO" ? (n(prod[r[0]]) || 1) : 1 };
     });
     return { res: res, ouv: st.ouv || D.OUV, coef: coef };
   }
@@ -184,7 +184,7 @@ var CALC = (function () {
     o.c.forEach(function (c) {
       var r = cat.res[c[0]];
       if (!r) return;
-      var qp = c[1] * (1 + (r.cat === "MAT" ? r.perte : 0) / 100);
+      var qp = c[1] * (1 + (r.cat === "MAT" ? r.perte : 0) / 100) * (r.prod || 1);
       var m = qp * r.p;
       tot[r.cat] += m;
       lignes.push({ code: r.code, d: r.d, u: r.u, q: c[1], perte: r.cat === "MAT" ? r.perte : 0, qp: qp, p: r.p, m: m, cat: r.cat });
@@ -263,7 +263,7 @@ var CALC = (function () {
       o.c.forEach(function (c) {
         var r = cat.res[c[0]];
         if (!r) return;
-        var qt = l.q * c[1] * (1 + (r.cat === "MAT" ? r.perte : 0) / 100);
+        var qt = l.q * c[1] * (1 + (r.cat === "MAT" ? r.perte : 0) / 100) * (r.prod || 1);
         if (r.cat === "MO") { mo[r.code] = (mo[r.code] || 0) + qt; return; }
         if (r.cat !== "MAT") return;
         parPhase[l.phase] = parPhase[l.phase] || {};

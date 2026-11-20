@@ -1041,10 +1041,10 @@ var CALC = (function () {
 
   // ---------------------------------------------------------------- PRIX
   function catalogue(st, region) {
-    var coef = (D.REGIONS[region] || [1])[0];
+    var coef = (D.REGIONS[region] || [1])[0], prod = ((st.ent || {}).productivite) || {};
     var res = {};
     (st.res || D.RES).forEach(function (r) {
-      res[r[0]] = { code: r[0], d: r[1], u: r[2], p0: r[3], cat: r[4], perte: r[5], p: r[4] === "MAT" ? r[3] * coef : r[3] };
+      res[r[0]] = { code: r[0], d: r[1], u: r[2], p0: r[3], cat: r[4], perte: r[5], p: r[4] === "MAT" ? r[3] * coef : r[3], prod: r[4] === "MO" ? (n(prod[r[0]]) || 1) : 1 };
     });
     return { res: res, ouv: st.ouv || D.OUV, coef: coef };
   }
@@ -1058,7 +1058,7 @@ var CALC = (function () {
     o.c.forEach(function (c) {
       var r = cat.res[c[0]];
       if (!r) return;
-      var qp = c[1] * (1 + (r.cat === "MAT" ? r.perte : 0) / 100);
+      var qp = c[1] * (1 + (r.cat === "MAT" ? r.perte : 0) / 100) * (r.prod || 1);
       var m = qp * r.p;
       tot[r.cat] += m;
       lignes.push({ code: r.code, d: r.d, u: r.u, q: c[1], perte: r.cat === "MAT" ? r.perte : 0, qp: qp, p: r.p, m: m, cat: r.cat });
@@ -1137,7 +1137,7 @@ var CALC = (function () {
       o.c.forEach(function (c) {
         var r = cat.res[c[0]];
         if (!r) return;
-        var qt = l.q * c[1] * (1 + (r.cat === "MAT" ? r.perte : 0) / 100);
+        var qt = l.q * c[1] * (1 + (r.cat === "MAT" ? r.perte : 0) / 100) * (r.prod || 1);
         if (r.cat === "MO") { mo[r.code] = (mo[r.code] || 0) + qt; return; }
         if (r.cat !== "MAT") return;
         parPhase[l.phase] = parPhase[l.phase] || {};
@@ -1302,7 +1302,7 @@ var PLAN = (function () {
           ligneTache[l.id] = ligneTache[l.id] || []; ligneTache[l.id].push([tk.id, fr]);
           mt += l.m * fr; ds += l.q * l.ds * fr;
           var o = cat.ouv[l.code]; if (!o) return;
-          o.c.forEach(function (c) { var r = cat.res[c[0]]; if (r && r.cat === "MO") mo[r.code] = (mo[r.code] || 0) + l.q * c[1] * fr; });
+          o.c.forEach(function (c) { var r = cat.res[c[0]]; if (r && r.cat === "MO") mo[r.code] = (mo[r.code] || 0) + l.q * c[1] * fr * (r.prod || 1); });
         });
       });
       var dur = 0, princ = null;
@@ -1422,6 +1422,8 @@ var PLAN = (function () {
     var A = [], charges = {};
     function add(niv, p, type, msg, quand) { A.push({ niv: niv, projet: p.info.nom, pid: p.id, type: type, msg: msg, quand: quand || jour }); }
     projets.forEach(function (p) {
+      if (p.archive) return;
+      relances(p, jour, ent, add);
       if ((p.statut || "etude") !== "chantier") return;
       var q = C.dqe(p, st), F = prevision(p, q, jour), cfg = F.cfg, i = p.info || {};
       // 1. livraison
@@ -1475,6 +1477,10 @@ var PLAN = (function () {
       var sit = ((p.factu || {}).docs || []).filter(function (d) { return d.type === "situation"; });
       var derniere = sit.reduce(function (m, d) { return maxS(m, d.date); }, null);
       if (F.avancement >= 5 && (!derniere || diff(derniere, jour) > 30)) add("orange", p, "Facturation", "Avancement global " + Math.round(F.avancement) + " % : pensez à établir une situation de travaux" + (derniere ? " (dernière le " + fr(derniere) + ")" : "") + ".");
+      // 11. dérive des dépenses par lot
+      ecartsLots(p, q, F).forEach(function (x) {
+        if (x.reel > 100000 && x.reel > x.prevu * 1.1) add(x.reel > x.prevu * 1.25 ? "rouge" : "orange", p, "Coûts", "Lot « " + x.nom + " » : " + Math.round(x.reel).toLocaleString("fr-FR") + " FCFA dépensés pour " + Math.round(x.prevu).toLocaleString("fr-FR") + " FCFA prévus à cet avancement (+" + Math.round(100 * (x.reel / Math.max(1, x.prevu) - 1)) + " %).");
+      });
     });
     // 10. surcharge d'équipes multi-chantiers
     var cap = Object.assign({}, CAPACITE, (ent || {}).capacite || {}), vu = {};
@@ -1487,6 +1493,24 @@ var PLAN = (function () {
     });
     var ordre = { rouge: 0, orange: 1, info: 2 };
     return A.sort(function (a, b) { return ordre[a.niv] - ordre[b.niv] || (a.quand < b.quand ? -1 : 1); });
+  }
+  // Factures échues non payées (tous projets non archivés)
+  function relances(p, jour, ent, add) {
+    var dl = n((ent || {}).delaiPaiement) || 30;
+    (((p.factu || {}).docs) || []).forEach(function (d) {
+      var du = d.type === "situation" ? n(d.net) : n(d.ttc), paye = (d.paiements || []).reduce(function (s, x) { return s + n(x.mt); }, 0), ech = addDays(d.date, dl);
+      if (du - paye > 1 && ech < jour) { var j = diff(ech, jour); add(j > 15 ? "rouge" : "orange", p, "Paiement", "Facture " + d.num + " : " + Math.round(du - paye).toLocaleString("fr-FR") + " FCFA impayés, échue depuis " + j + " jours (le " + fr(ech) + "). Relancez le client (Facturation › Relancer).", ech); }
+    });
+  }
+  // Dépenses réelles par lot vs déboursé prévu à l'avancement
+  function ecartsLots(p, q, F) {
+    var prevu = {}, budget = {}, reel = {}, lig = {};
+    q.lignes.forEach(function (l) { lig[l.id] = l; budget[l.lot] = (budget[l.lot] || 0) + l.q * l.ds; });
+    F.taches.forEach(function (t) { (t.lignesDQE || []).forEach(function (ln) { var l = lig[ln.id]; if (l) prevu[l.lot] = (prevu[l.lot] || 0) + l.q * l.ds * ln.fr * t.pct / 100; }); });
+    (((p.factu || {}).achats) || []).forEach(function (a) { if (a.lot) reel[a.lot] = (reel[a.lot] || 0) + n(a.mt); });
+    ((p.suivi || {}).rapports || []).forEach(function (r) { (r.dep || []).forEach(function (d) { if (d.lot) reel[d.lot] = (reel[d.lot] || 0) + n(d.mt); }); });
+    var D = (typeof DATA !== "undefined" && DATA.LOTS) || [];
+    return Object.keys(budget).map(function (k) { var L = D.filter(function (x) { return x[0] === k; })[0]; return { lot: k, nom: L ? L[1] : k, budget: budget[k], prevu: prevu[k] || 0, reel: reel[k] || 0 }; });
   }
   var LIB = { MAC: "maçons", FER: "ferrailleurs", COFR: "coffreurs", MAN: "manœuvres", CARR: "carreleurs", PEIN: "peintres", PLOM: "plombiers", ELEC: "électriciens", MEN: "menuisiers", ETANC: "étancheurs", CHEF: "chefs d'équipe" };
   function fr(s) { if (!s) return "—"; var a = s.split("-"); return a[2] + "/" + a[1] + "/" + a[0]; }
@@ -1537,7 +1561,7 @@ var PLAN = (function () {
   }
 
   return { d2s: d2s, s2d: s2d, addDays: addDays, diff: diff, fr: fr, ouvre: ouvre, finTravail: finTravail, cfgOf: cfgOf, EQUIPES: EQUIPES, APPRO: APPRO, CAPACITE: CAPACITE, LIB: LIB,
-    taches: taches, planifier: planifier, prevision: prevision, avancements: avancements, besoinsTache: besoinsTache, consommations: consommations, alertes: alertes, situation: situation, tresorerie: tresorerie, pctPrevu: pctPrevu };
+    taches: taches, planifier: planifier, prevision: prevision, ecartsLots: ecartsLots, prochainOuvre: prochainOuvre, joursOuvres: joursOuvres, avancements: avancements, besoinsTache: besoinsTache, consommations: consommations, alertes: alertes, situation: situation, tresorerie: tresorerie, pctPrevu: pctPrevu };
 })();
 if (typeof module !== "undefined") module.exports = PLAN;
 </script>
@@ -1545,7 +1569,7 @@ if (typeof module !== "undefined") module.exports = PLAN;
    PILOTE BTP — interface
    ============================================================ */
 var APP = (function () {
-  var D = DATA, C = CALC, KEY = "piloteBTP_v1", VERSION = "2026.11.20-c";
+  var D = DATA, C = CALC, KEY = "piloteBTP_v1", VERSION = "2026.11.20-d";
   var S, ui = { page: "dash", sub: { metres: "fond", prix: "dqe" }, niv: 0, ouv: null, phase: "Toutes", ouvEdit: "3.4" };
   var $ = function (id) { return document.getElementById(id); };
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
@@ -1568,6 +1592,9 @@ var APP = (function () {
     if (!s.ouv) s.ouv = clone(D.OUV);
     Object.keys(D.OUV).forEach(function (k) { if (!s.ouv[k]) s.ouv[k] = clone(D.OUV[k]); });
     s.ent.capacite = Object.assign({}, D.ENTREPRISE.capacite, s.ent.capacite || {});
+    s.ent.productivite = s.ent.productivite || {};
+    s.appr = s.appr || { journal: [], ignore: {} }; s.appr.journal = s.appr.journal || []; s.appr.ignore = s.appr.ignore || {};
+    s.sauvegarde = s.sauvegarde || {};
     s.terrain = s.terrain || { moi: "" };
     s.projects.forEach(function (p) {
       p.overrides = p.overrides || {}; p.devis = p.devis || {}; p.opt = Object.assign({}, D.exemple().opt, p.opt || {});
@@ -1582,7 +1609,7 @@ var APP = (function () {
       p.suivi = p.suivi || {}; p.suivi.rapports = p.suivi.rapports || [];
       p.factu = p.factu || {}; p.factu.docs = p.factu.docs || []; p.factu.achats = p.factu.achats || [];
       p.memoire = p.memoire || {}; p.memoire.sections = p.memoire.sections || {};
-      p.mode = p.mode || "complet"; p.rapide = p.rapide || [];
+      p.mode = p.mode || "complet"; p.rapide = p.rapide || []; p.archive = !!p.archive;
       p.marche = Object.assign({ type: "prive", autorite: "etat", nomAutorite: "", ref: "", montantEstime: 0, dateDepot: "", heureDepot: "", validite: 90, tauxBE: 0, autres: "" }, p.marche || {}); p.marche.check = p.marche.check || {};
       p.reception = Object.assign({ num: "", date: new Date().toISOString().slice(0, 10), lieu: "", decision: "sans", delai: 30, ref: "", mo: "", moe: "", ent: "", obs: "" }, p.reception || {});
     });
@@ -1595,6 +1622,15 @@ var APP = (function () {
   function idbDel(st, k) { return new Promise(function (res) { if (!DB) return res(false); try { var tx = DB.transaction(st, "readwrite"); tx.objectStore(st).delete(k); tx.oncomplete = function () { res(true); }; } catch (e) { res(false); } }); }
   function photoPut(id, data) { MEMPH[id] = data; return idbPut("photos", id, data); }
   function photoGet(id) { if (MEMPH[id]) return Promise.resolve(MEMPH[id]); return idbGet("photos", id).then(function (v) { if (v) MEMPH[id] = v; return v; }); }
+  function photoAll() {
+    return new Promise(function (res) {
+      var out = {}; Object.keys(MEMPH).forEach(function (k) { out[k] = MEMPH[k]; });
+      if (!DB) return res(out);
+      try { var rq = DB.transaction("photos").objectStore("photos").openCursor(); rq.onsuccess = function () { var c = rq.result; if (c) { out[c.key] = c.value; c.continue(); } else res(out); }; rq.onerror = function () { res(out); }; } catch (e) { res(out); }
+    });
+  }
+  function kvGet(k) { return idbGet("kv", k); }
+  function kvPut(k, v) { return idbPut("kv", k, v); }
   function photoDel(id) { delete MEMPH[id]; return idbDel("photos", id); }
   function load() {
     return idbOpen().then(function (db) {
@@ -1615,6 +1651,7 @@ var APP = (function () {
       (DB ? idbPut("kv", "state", txt) : Promise.resolve(false)).then(function (ok) {
         if (!ok) { try { localStorage.setItem(KEY, txt); ok = true; } catch (e) {} }
         $("saveState").textContent = ok ? "Enregistré · " + heure : "⚠ Enregistrement impossible : exportez une sauvegarde";
+        if (ok && window.PIL) PIL.apresEnregistrement();
       });
     }, 200);
   }
@@ -1658,7 +1695,7 @@ var APP = (function () {
   var MENU = [
     ["dash", "Tableau de bord", "▦"], ["projets", "Projets", "▤"], ["metres", "Métrés / devis rapide", "⊞"], ["prix", "Études de prix", "₣"],
     ["planning", "Planning", "▭"], ["opc", "OPC et anticipation", "◎"], ["terrain", "Suivi terrain", "⚑"],
-    ["appro", "Approvisionnements", "⛟"], ["factu", "Facturation et trésorerie", "≡"], ["memoires", "Mémoires techniques", "✎"], ["params", "Paramètres", "⚙"]
+    ["appro", "Approvisionnements", "⛟"], ["factu", "Facturation et trésorerie", "≡"], ["memoires", "Mémoires techniques", "✎"], ["archives", "Archives, REX et apprentissage", "▣"], ["params", "Paramètres", "⚙"]
   ];
   function renderMenu() {
     $("menu").innerHTML = MENU.map(function (m) { return '<button data-p="' + m[0] + '" class="' + (ui.page === m[0] ? "on" : "") + '"><span class="ic">' + m[2] + "</span>" + m[1] + (m[3] ? '<em>' + m[3] + "</em>" : "") + "</button>"; }).join("");
@@ -1668,7 +1705,7 @@ var APP = (function () {
   function renderTop() {
     var br = $("brandName"); if (br) br.textContent = S.ent.nom || "Pilote BTP";
     var bl = $("brandLogo"); if (bl) { if (S.ent.logo) { bl.src = S.ent.logo; bl.style.display = "block"; } else bl.style.display = "none"; }
-    $("projSel").innerHTML = S.projects.map(function (p) { return '<option value="' + p.id + '"' + (p.id === S.active ? " selected" : "") + ">" + esc(p.info.nom) + "</option>"; }).join("");
+    $("projSel").innerHTML = S.projects.filter(function (p) { return !p.archive || p.id === S.active; }).map(function (p) { return '<option value="' + p.id + '"' + (p.id === S.active ? " selected" : "") + ">" + esc(p.info.nom) + "</option>"; }).join("");
   }
   function go(page, sub) { ui.page = page; if (sub) ui.sub[page] = sub; renderMenu(); renderPage(); window.scrollTo(0, 0); try { history.replaceState(null, "", "#" + page); } catch (e) {} }
   function tabs(page, list) {
@@ -1693,6 +1730,7 @@ var APP = (function () {
     var marge = q.ht - q.ds;
     var maxPh = Math.max.apply(null, q.phases.map(function (x) { return x.total; }).concat([1]));
     var h = '<div class="head"><h1>Tableau de bord</h1><p>Projet actif : <b>' + esc(p.info.nom) + "</b> · " + esc(p.info.client || "client non renseigné") + " · " + esc(p.info.ville || p.info.region) + "</p></div>";
+    if (window.PIL) h += PIL.dashHTML();
     if (S.demo) h += '<div class="note">Le projet « Villa R+1 – exemple » est <b>fictif</b>, avec des prix <b>indicatifs</b>. Créez votre projet dans <a href="#" data-go="projets">Projets</a> et mettez vos prix réels dans <a href="#" data-go="prix:biblio">Études de prix › Bibliothèque</a>.</div>';
     h += '<div class="kpis">' + kpi("Montant TTC", fmt(q.ttc), "FCFA · HT " + fmt(q.ht)) + kpi("Coût au m²", fmt(q.surface ? q.ttc / q.surface : 0), "FCFA TTC / m² de plancher (" + fmt(q.surface) + " m²)") +
       kpi("Déboursé sec", fmt(q.ds), "FCFA · coefficient K = " + q.k.toFixed(3)) + kpi("Marge brute prévue", fmt(marge), "FCFA · " + fmt(q.ht ? 100 * marge / q.ht : 0, 1) + " % du HT") +
@@ -1701,7 +1739,7 @@ var APP = (function () {
     h += '<div class="grid2"><div class="card"><h2>Montant par phase (HT)</h2>' + q.phases.map(function (ph) {
       return '<div class="bar"><span>' + esc(ph.nom) + '</span><div><i style="width:' + (100 * ph.total / maxPh) + '%"></i></div><b>' + fmt(ph.total / 1e6, 2) + " M</b></div>";
     }).join("") + '</div><div class="card"><h2>Mes projets</h2><table class="t"><tr><th class="l">Projet</th><th class="l">Ville</th><th>Surface</th><th>TTC (FCFA)</th><th>FCFA/m²</th></tr>' +
-      S.projects.map(function (x) { var qx = C.dqe(x, ST()); return '<tr class="click" data-open="' + x.id + '"><td class="l">' + esc(x.info.nom) + (x.id === S.active ? " <span class='tag'>actif</span>" : "") + '</td><td class="l">' + esc(x.info.ville || x.info.region) + "</td><td>" + fmt(qx.surface) + " m²</td><td>" + fmt(qx.ttc) + "</td><td>" + fmt(qx.surface ? qx.ttc / qx.surface : 0) + "</td></tr>"; }).join("") +
+      S.projects.filter(function (x) { return !x.archive; }).map(function (x) { var qx = C.dqe(x, ST()); return '<tr class="click" data-open="' + x.id + '"><td class="l">' + esc(x.info.nom) + (x.id === S.active ? " <span class='tag'>actif</span>" : "") + '</td><td class="l">' + esc(x.info.ville || x.info.region) + "</td><td>" + fmt(qx.surface) + " m²</td><td>" + fmt(qx.ttc) + "</td><td>" + fmt(qx.surface ? qx.ttc / qx.surface : 0) + "</td></tr>"; }).join("") +
       "</table></div></div>";
     h += (window.MOD && MOD.engagementsHTML) ? MOD.engagementsHTML(true) : "";
     return h;
@@ -1952,7 +1990,7 @@ var APP = (function () {
     if (!p.devis.num) p.devis.num = "D-" + new Date().getFullYear() + "-" + String(S.projects.indexOf(p) + 1).padStart(3, "0");
     if (p.devis.mode == null) p.devis.mode = "detail";
     if (p.devis.echeancier == null) p.devis.echeancier = true;
-    var h = '<div class="bar-btn"><button class="btn p" id="pdfDevis">Générer le PDF du devis</button></div>';
+    var h = '<div class="bar-btn"><button class="btn p" id="pdfDevis">Générer le PDF du devis</button><button class="btn" id="waDevis">Envoyer au client par WhatsApp</button></div>';
     h += '<div class="card"><h2>Paramètres du devis</h2><div class="form">' + fld("N° du devis", "devis.num", { text: true }) + fld("Objet", "devis.objet", { text: true, ph: "Construction d'une villa R+1" }) +
       fld("Présentation", "devis.mode", { options: [["detail", "Détaillée (toutes les lignes)"], ["lots", "Récapitulatif par lot"]] }) + fld("Échéancier de paiement par phase", "devis.echeancier", { check: true }) +
       '</div><label class="f wide"><span>Conditions particulières (laisser vide = conditions par défaut des Paramètres)</span>' + inp("devis.conditions", { area: true, rows: 3 }) + "</label></div>";
@@ -1969,7 +2007,7 @@ var APP = (function () {
   function echTable(q) {
     return '<table class="t"><tr><th class="l">Échéance</th><th>%</th><th>Montant TTC</th></tr>' + echeancier(q).map(function (r) { return '<tr><td class="l">' + esc(r[0]) + "</td><td>" + fmt(100 * r[1] / q.ttc, 1) + " %</td><td>" + fmt(r[1]) + "</td></tr>"; }).join("") + "</table>";
   }
-  POSTPRIX.devis = function () { $("pdfDevis").onclick = function () { PDF.devis(); }; };
+  POSTPRIX.devis = function () { $("pdfDevis").onclick = function () { PDF.devis(); }; $("waDevis").onclick = function () { var p = P(), q = Q(); if (window.PIL) PIL.envoyer(function () { PDF.devis(); }, p.info.tel, "Bonjour" + (p.info.client ? " " + p.info.client : "") + ", veuillez trouver ci-joint notre devis n° " + (p.devis.num || "") + " pour « " + (p.devis.objet || p.info.nom) + " », d'un montant de " + fmt(q.ttc) + " FCFA TTC. Je reste à votre disposition pour en discuter. Cordialement, " + S.ent.responsable + " – " + S.ent.nom + "."); }; };
   function prixBiblio() {
     var cat = C.catalogue(ST(), P().info.region);
     var h = '<div class="note">Base de prix <b>Dakar</b>, en FCFA HT. Les matériaux sont multipliés par le coefficient de la région du projet (' + esc(P().info.region) + " : ×" + cat.coef.toFixed(2) + "). Ciment, fer, sable et gravier : moyennes ANSD 2026 ; autres prix : ordres de grandeur à remplacer par vos prix fournisseurs et tâcherons.</div>";
@@ -2029,7 +2067,8 @@ var APP = (function () {
     h += '<div class="card"><table class="t"><tr><th class="l">Matériau</th><th>Quantité</th><th class="l">En unités d\'achat</th><th>P.U. estimé</th><th>Montant estimé</th></tr>';
     rows.forEach(function (k) { var r = cat.res[k], m = data[k] * r.p; tot += m; h += '<tr><td class="l">' + esc(r.d) + "</td><td>" + fmt(data[k], r.u === "u" || r.u === "pt" ? 0 : 2) + " " + esc(r.u) + '</td><td class="l">' + esc(C.unitesAchat(k, data[k], S.ent) || "") + "</td><td>" + fmt(r.p) + "</td><td>" + fmt(m) + "</td></tr>"; });
     h += '<tr class="tot"><td colspan="4" class="l">Total matériaux estimé (HT, prix ' + esc(P().info.region) + ")</td><td>" + fmt(tot) + "</td></tr></table></div>";
-    h += '<div class="card"><h2>Main-d\'œuvre totale du projet (journées)</h2><table class="t"><tr><th class="l">Métier</th><th>Journées</th><th>Coût estimé</th></tr>' + Object.keys(b.mo).map(function (k) { return '<tr><td class="l">' + esc(cat.res[k].d) + "</td><td>" + fmt(b.mo[k]) + "</td><td>" + fmt(b.mo[k] * cat.res[k].p) + "</td></tr>"; }).join("") + "</table><p class='hint'>Ces journées serviront à calculer les durées du planning (V2).</p></div>";
+    if (window.PIL) h += PIL.fournisseursHTML();
+    h += '<div class="card"><h2>Main-d\'œuvre totale du projet (journées)</h2><table class="t"><tr><th class="l">Métier</th><th>Journées</th><th>Coût estimé</th></tr>' + Object.keys(b.mo).map(function (k) { return '<tr><td class="l">' + esc(cat.res[k].d) + "</td><td>" + fmt(b.mo[k]) + "</td><td>" + fmt(b.mo[k] * cat.res[k].p) + "</td></tr>"; }).join("") + "</table><p class='hint'>Ces journées servent à calculer les durées du planning (cadences apprises comprises).</p></div>";
     return h;
   };
   POST.appro = function () { $("phSel").onchange = function () { ui.phase = this.value; renderPage(); }; $("pdfBC").onclick = function () { PDF.commande(ui.phase); }; };
@@ -2056,7 +2095,7 @@ var APP = (function () {
     h += '<div class="card"><h2>Effectif disponible de l\'entreprise (tous chantiers)</h2><div class="form">' + Object.keys(PLAN.CAPACITE).map(function (k) { return fld(PLAN.LIB[k].charAt(0).toUpperCase() + PLAN.LIB[k].slice(1), "capacite." + k, e); }).join("") +
       '</div><p class="hint">Le moteur d\'anticipation compare ces effectifs aux besoins de tous les chantiers en cours, jour par jour, et vous prévient des surcharges.</p></div>';
     h += '<div class="card"><h2>Version de l\'application</h2><p>' + VERSION + (location.protocol === "file:" ? ' — <b>fichier local</b> : il ne se met pas à jour tout seul. Utilisez l\'adresse en ligne de l\'application pour recevoir les mises à jour automatiquement.' : " — mises à jour automatiques activées (dès qu'il y a internet).") + "</p></div>";
-    h += '<div class="card"><h2>Sauvegardes</h2><p class="hint">Vos données sont enregistrées automatiquement dans ce navigateur. Exportez régulièrement une sauvegarde : c\'est elle qui vous permet de changer d\'ordinateur ou d\'envoyer un projet.</p><div class="bar-btn"><button class="btn p" id="expJ">Exporter une sauvegarde (.json)</button><label class="btn">Importer une sauvegarde<input type="file" id="impJ" accept=".json,application/json" hidden></label><button class="btn danger" id="rstAll">Tout réinitialiser</button></div></div>';
+    h += window.PIL ? PIL.sauvegardeHTML() : "";
     return h;
   };
   function updateK() { var e = $("kVal"); if (e) e.textContent = C.K(S.ent).toFixed(3); }
@@ -2077,12 +2116,7 @@ var APP = (function () {
       }; rd.readAsDataURL(f);
     };
     var ld = $("logoDel"); if (ld) ld.onclick = function () { S.ent.logo = ""; S.ent.logoRetire = true; save(); renderPage(); };
-    $("expJ").onclick = function () { saveFile(new Blob([JSON.stringify(S, null, 1)], { type: "application/json" }), "pilote-btp-sauvegarde-" + new Date().toISOString().slice(0, 10) + ".json"); };
-    $("impJ").onchange = function () {
-      var f = this.files[0]; if (!f) return; var rd = new FileReader();
-      rd.onload = function () { try { var s = JSON.parse(rd.result); if (!s.projects) throw "format"; S = migrate(s); save(); renderTop(); renderPage(); toast("Sauvegarde importée : " + S.projects.length + " projet(s)"); } catch (e) { toast("Fichier invalide"); } };
-      rd.readAsText(f);
-    };
+    if (window.PIL) PIL.postSauvegarde();
     $("rstAll").onclick = function () { var b = $("rstAll"); if (b.dataset.c !== "1") { b.dataset.c = "1"; b.textContent = "Confirmer : tout effacer"; return; } S = migrate(defState()); save(); renderTop(); renderPage(); toast("Application réinitialisée"); };
   };
 
@@ -2103,6 +2137,7 @@ var APP = (function () {
   /* ---------------- Fichiers ---------------- */
   function slug(s) { return String(s || "projet").normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 40); }
   function saveFile(blob, name) {
+    if (ui.envoi && window.PIL) { var env = ui.envoi; ui.envoi = null; return PIL.partagerFichier(blob, name, env); }
     if (window.claude && typeof window.claude.use === "function") {
       window.claude.use("downloads").then(function (dl) {
         if (!dl) return anchorSave(blob, name);
@@ -2308,7 +2343,7 @@ var APP = (function () {
   function reg(page, render, post) { PAGES[page] = render; if (post) POST[page] = post; }
   return { init: init, reg: reg, _state: function () { return S; }, _pdf: function () { return PDF; },
     X: { P: P, ST: ST, Q: Q, S: function () { return S; }, setS: function (s) { S = migrate(s); }, migrate: migrate, save: save, renderPage: renderPage, renderTop: renderTop, renderMenu: renderMenu, go: go, fmt: fmt, fq: fq, esc: esc, inp: inp, fld: fld, bindAll: bindAll,
-      tabs: tabs, bindTabs: bindTabs, toast: toast, saveFile: saveFile, slug: slug, clone: clone, ui: ui, kpi: kpi, photoPut: photoPut, photoGet: photoGet, photoDel: photoDel, echeancier: echeancier, linkGo: linkGo } };
+      tabs: tabs, bindTabs: bindTabs, toast: toast, saveFile: saveFile, slug: slug, clone: clone, ui: ui, kpi: kpi, photoPut: photoPut, photoGet: photoGet, photoDel: photoDel, photoAll: photoAll, kvGet: kvGet, kvPut: kvPut, setStateRaw: function (s) { S = migrate(s); }, VERSION: VERSION, echeancier: echeancier, linkGo: linkGo } };
 })();
 document.addEventListener("DOMContentLoaded", APP.init);
 </script>
@@ -2377,7 +2412,7 @@ var MOD = (function () {
           var o; try { o = JSON.parse(txt); } catch (e) { bilan.erreurs++; return; }
           if (o.type === "rapport") return integrerRapport(o).then(function (ok) { if (ok) bilan.rapports++; });
           if (o.type === "projet") { integrerProjet(o); bilan.projets++; return; }
-          if (o.projects) { X.setS(o); bilan.sauvegarde++; return; }
+          if (o.projects || o.type === "sauvegarde2AM") { return PIL.importer(o).then(function () { bilan.sauvegarde++; }); }
           bilan.erreurs++;
         });
       });
@@ -2456,6 +2491,7 @@ var MOD = (function () {
       X.kpi("Livraison promise", liv ? fr(liv) : "—", liv ? (marge >= 0 ? "marge de " + marge + " jours" : (-marge) + " jours de dépassement") : "à renseigner dans Projets") +
       X.kpi("Tâches critiques", T.filter(function (t) { return t.critique; }).length + " / " + T.length, "un retard sur l'une d'elles décale la livraison") + "</div>";
     if (liv && marge < 0) h += '<div class="note rouge">Le planning dépasse la date promise de <b>' + (-marge) + ' jours</b>. Leviers : renforcer les équipes des tâches critiques (en rouge), travailler le samedi, démarrer plus tôt, ou renégocier la date.</div>';
+    if (window.PIL) h += PIL.risqueHTML(p);
     h += '<div class="card"><h2>Paramètres du planning</h2><div class="form">' + fld("Date de début des travaux", "planning.debut", { date: true }) + fld("Travail le samedi", "planning.samedi", { check: true }) +
       fld("Prendre en compte l'hivernage", "planning.hivernage", { check: true }, "De juillet à octobre, la productivité des travaux extérieurs est réduite.") + fld("Productivité en hivernage (0 à 1)", "planning.facteurHiv", {}, "0,75 = les travaux extérieurs avancent à 75 % de la normale.") + "</div>" +
       '<h2 style="margin-top:14px">Effectif affecté à ce chantier (par métier)</h2><div class="form">' + Object.keys(PL.EQUIPES).filter(function (k) { return k !== "CHEF"; }).map(function (k) { return fld(LIBM[k], "planning.equipes." + k); }).join("") + "</div></div>";
@@ -2672,7 +2708,7 @@ var MOD = (function () {
     }).join("") : '<p class="hint">Aucune tâche prévue dans les 15 prochains jours. Vérifiez le planning.</p>') + "</div>";
     h += '<div class="card"><h2>Matériaux consommés aujourd\'hui</h2><div class="form compact">' + MATS.map(function (m) { return '<label class="f"><span>' + m[1] + '</span><input type="number" min="0" step="any" data-br="mat.' + m[0] + '" value="' + (b.mat[m[0]] || "") + '"></label>'; }).join("") + "</div></div>";
     h += '<div class="card"><h2>Dépenses de caisse</h2><table class="t edit"><tr><th class="l">Libellé</th><th>Montant (FCFA)</th><th class="l">Paiement</th><th>Reçu</th><th></th></tr>' + b.dep.map(function (d, i) {
-      return '<tr><td class="l"><input type="text" data-dep="' + i + '|lib" value="' + esc(d.lib) + '"></td><td><input type="number" data-dep="' + i + '|mt" value="' + (d.mt || "") + '"></td><td class="l"><select data-dep="' + i + '|mode">' + ["Espèces", "Wave", "Orange Money", "Virement"].map(function (m) { return "<option" + (d.mode === m ? " selected" : "") + ">" + m + "</option>"; }).join("") + "</select></td><td>" + vignettes(d.photo ? [d.photo] : [], "mini") + '<label class="btn sm">📷<input type="file" accept="image/*" capture="environment" data-depph="' + i + '" hidden></label></td><td><button class="x" data-depdel="' + i + '">✕</button></td></tr>';
+      return '<tr><td class="l"><input type="text" data-dep="' + i + '|lib" value="' + esc(d.lib) + '"></td><td><input type="number" data-dep="' + i + '|mt" value="' + (d.mt || "") + '"><br><select data-dep="' + i + '|lot" style="max-width:150px;margin-top:3px">' + '<option value="">— lot —</option>' + DATA.LOTS.map(function (L) { return '<option value="' + L[0] + '"' + (d.lot === L[0] ? " selected" : "") + ">" + esc(L[1]) + "</option>"; }).join("") + '</select></td><td class="l"><select data-dep="' + i + '|mode">' + ["Espèces", "Wave", "Orange Money", "Virement"].map(function (m) { return "<option" + (d.mode === m ? " selected" : "") + ">" + m + "</option>"; }).join("") + "</select></td><td>" + vignettes(d.photo ? [d.photo] : [], "mini") + '<label class="btn sm">📷<input type="file" accept="image/*" capture="environment" data-depph="' + i + '" hidden></label></td><td><button class="x" data-depdel="' + i + '">✕</button></td></tr>';
     }).join("") + '</table><button class="btn sm" id="addDep">+ Ajouter une dépense</button></div>';
     h += '<div class="card"><h2>Journal</h2><label class="f wide"><span>Livraisons reçues</span><textarea data-br="livraisons" rows="2">' + esc(b.livraisons) + '</textarea></label><label class="f wide"><span>Incidents, problèmes, besoins</span><textarea data-br="incidents" rows="2">' + esc(b.incidents) + '</textarea></label><label class="f wide"><span>Remarques</span><textarea data-br="note" rows="2">' + esc(b.note) + "</textarea></label>" +
       '<h2 style="margin-top:12px">Photos du jour</h2>' + vignettes(b.photos, "mini") + '<label class="btn">📷 Ajouter des photos<input type="file" accept="image/*" multiple data-gph="1" hidden></label></div>';
@@ -2780,7 +2816,7 @@ var MOD = (function () {
     h += '<div class="card"><table class="t"><tr><th class="l">N°</th><th class="l">Type</th><th>Date</th><th>Montant à payer</th><th>Encaissé</th><th>Reste</th><th class="l">Encaisser</th><th></th></tr>';
     docs.forEach(function (d, i) {
       var reste = aPayer(d) - paye(d), retard = reste > 1 && PL.addDays(d.date, +e.delaiPaiement || 30) < jour();
-      h += '<tr><td class="l"><b>' + esc(d.num) + '</b></td><td class="l">' + esc(libType(d)) + "</td><td>" + fr(d.date) + "</td><td>" + fmt(aPayer(d)) + "</td><td>" + fmt(paye(d)) + "</td><td>" + (reste > 1 ? fmt(reste) + (retard ? " " + badge("rouge", "échue") : "") : badge("vert", "soldée")) + '</td><td class="l"><input type="number" placeholder="montant" data-pay="' + i + '" style="width:110px"> <select data-paym="' + i + '">' + ["Virement", "Wave", "Orange Money", "Espèces", "Chèque"].map(function (x) { return "<option>" + x + "</option>"; }).join("") + '</select> <button class="btn sm" data-payok="' + i + '">OK</button></td><td><button class="btn sm" data-dpdf="' + i + '">PDF</button> <button class="x" data-ddel="' + i + '">✕</button></td></tr>';
+      h += '<tr><td class="l"><b>' + esc(d.num) + '</b></td><td class="l">' + esc(libType(d)) + "</td><td>" + fr(d.date) + "</td><td>" + fmt(aPayer(d)) + "</td><td>" + fmt(paye(d)) + "</td><td>" + (reste > 1 ? fmt(reste) + (retard ? " " + badge("rouge", "échue") : "") : badge("vert", "soldée")) + '</td><td class="l"><input type="number" placeholder="montant" data-pay="' + i + '" style="width:110px"> <select data-paym="' + i + '">' + ["Virement", "Wave", "Orange Money", "Espèces", "Chèque"].map(function (x) { return "<option>" + x + "</option>"; }).join("") + '</select> <button class="btn sm" data-payok="' + i + '">OK</button></td><td><button class="btn sm" data-dpdf="' + i + '">PDF</button> <button class="btn sm" data-dwa="' + i + '">WhatsApp</button>' + (retard ? ' <button class="btn sm p" data-drel="' + i + '">Relancer</button>' : "") + ' <button class="x" data-ddel="' + i + '">✕</button></td></tr>';
     });
     return h + "</table></div>";
   }
@@ -2812,9 +2848,13 @@ var MOD = (function () {
     var p = P(), A = p.factu.achats, r = F(p), dsAcq = r.F.taches.reduce(function (s, t) { return s + t.ds * t.pct / 100; }, 0), dep = depensesReelles(p);
     var caisse = dep - A.reduce(function (s, a) { return s + (+a.mt || 0); }, 0);
     var h = '<div class="kpis">' + X.kpi("Dépenses réelles", fmt(dep), "achats " + fmt(dep - caisse) + " + caisse chantier " + fmt(caisse)) + X.kpi("Déboursé prévu à cet avancement", fmt(dsAcq), "FCFA") + X.kpi("Écart", fmt(dep - dsAcq), dep > dsAcq * 1.05 ? "⚠ dépenses supérieures au prévu" : "dans le budget") + "</div>";
-    h += '<div class="card"><h2>Achats et paiements fournisseurs / tâcherons</h2><table class="t edit"><tr><th>Date</th><th class="l">Fournisseur / tâcheron</th><th class="l">Libellé</th><th>Montant (FCFA)</th><th></th></tr>' + A.map(function (a, i) {
-      var b = "factu.achats." + i; return "<tr><td>" + inp(b + ".date", { date: true }) + '</td><td class="l">' + inp(b + ".four", { text: true }) + '</td><td class="l">' + inp(b + ".lib", { text: true }) + "</td><td>" + inp(b + ".mt") + '</td><td><button class="x" data-adel="' + i + '">✕</button></td></tr>';
-    }).join("") + '</table><button class="btn sm" id="addAch">+ Ajouter un achat</button><p class="hint">Les dépenses de caisse saisies par les collaborateurs dans leurs rapports sont ajoutées automatiquement.</p></div>';
+    var EL = PL.ecartsLots(p, r.q, r.F), nonAff = dep - EL.reduce(function (s, x) { return s + x.reel; }, 0);
+    h += '<div class="card"><h2>Marge réelle par lot</h2><table class="t"><tr><th class="l">Lot</th><th>Budget (déboursé)</th><th>Prévu à l\'avancement</th><th>Dépensé</th><th>Écart</th></tr>' + EL.map(function (x) { var e = x.reel - x.prevu, niv = x.reel > 100000 && x.reel > x.prevu * 1.25 ? "rouge" : x.reel > 100000 && x.reel > x.prevu * 1.1 ? "orange" : null; return '<tr><td class="l">' + esc(x.nom) + "</td><td>" + fmt(x.budget) + "</td><td>" + fmt(x.prevu) + "</td><td>" + fmt(x.reel) + "</td><td>" + (x.reel ? fmt(e) + (niv ? " " + badge(niv, "dérive") : "") : "—") + "</td></tr>"; }).join("") + '<tr><td class="l"><i>Dépenses non affectées à un lot</i></td><td></td><td></td><td>' + fmt(nonAff) + '</td><td></td></tr></table><p class="hint">Affectez chaque achat à un lot : l\'application compare alors les dépenses au déboursé prévu à l\'avancement réel, et vous alerte dès qu\'un lot dérape de plus de 10 %.</p></div>';
+    var mats = S().res.filter(function (x) { return x[4] === "MAT"; });
+    h += '<div class="card"><h2>Achats et paiements fournisseurs / tâcherons</h2><div style="overflow-x:auto"><table class="t edit"><tr><th>Date</th><th class="l">Fournisseur / tâcheron</th><th class="l">Libellé</th><th class="l">Lot</th><th class="l">Matériau (facultatif)</th><th>Quantité</th><th>Montant (FCFA)</th><th>Prix unitaire</th><th>Délai livr. (j)</th><th></th></tr>' + A.map(function (a, i) {
+      var b = "factu.achats." + i, res = mats.filter(function (x) { return x[0] === a.res; })[0];
+      return "<tr><td>" + inp(b + ".date", { date: true }) + '</td><td class="l">' + inp(b + ".four", { text: true }) + '</td><td class="l">' + inp(b + ".lib", { text: true }) + '</td><td class="l"><select data-b="' + b + '.lot" style="max-width:150px">' + '<option value="">— lot —</option>' + DATA.LOTS.map(function (L) { return '<option value="' + L[0] + '"' + (a.lot === L[0] ? " selected" : "") + ">" + esc(L[1]) + "</option>"; }).join("") + '</select></td><td class="l"><select data-b="' + b + '.res" style="max-width:170px"><option value="">—</option>' + mats.map(function (x) { return '<option value="' + x[0] + '"' + (a.res === x[0] ? " selected" : "") + ">" + esc(x[1] + " (" + x[2] + ")") + "</option>"; }).join("") + "</select></td><td>" + inp(b + ".qte", { w: "70px" }) + "</td><td>" + inp(b + ".mt") + "</td><td>" + (res && +a.qte > 0 ? fmt(a.mt / a.qte) + " / " + esc(res[2]) : "—") + "</td><td>" + inp(b + ".delai", { w: "56px" }) + '</td><td><button class="x" data-adel="' + i + '">✕</button></td></tr>';
+    }).join("") + '</table></div><button class="btn sm" id="addAch">+ Ajouter un achat</button><p class="hint">Indiquez le matériau et la quantité (ex. ciment, 2 t) : l\'application apprend vos vrais prix et compare vos fournisseurs (Approvisionnements › Fournisseurs). Les dépenses de caisse des rapports terrain sont ajoutées automatiquement.</p></div>';
     return h;
   }
   function facTreso() {
@@ -2842,6 +2882,8 @@ var MOD = (function () {
     document.querySelectorAll("[data-payok]").forEach(function (bt) { bt.onclick = function () { var i = +bt.dataset.payok, v = +document.querySelector('[data-pay="' + i + '"]').value; if (!v) return; p.factu.docs[i].paiements = p.factu.docs[i].paiements || []; p.factu.docs[i].paiements.push({ mt: v, date: jour(), mode: document.querySelector('[data-paym="' + i + '"]').value }); X.save(); X.renderPage(); X.toast("Encaissement enregistré"); }; });
     document.querySelectorAll("[data-ddel]").forEach(function (bt) { bt.onclick = function () { if (bt.dataset.c !== "1") { bt.dataset.c = "1"; bt.textContent = "Supprimer ?"; return; } p.factu.docs.splice(+bt.dataset.ddel, 1); X.save(); X.renderPage(); }; });
     document.querySelectorAll("[data-dpdf]").forEach(function (bt) { bt.onclick = function () { pdfFacture(p.factu.docs[+bt.dataset.dpdf]); }; });
+    document.querySelectorAll("[data-dwa]").forEach(function (bt) { bt.onclick = function () { var d = p.factu.docs[+bt.dataset.dwa]; PIL.envoyer(function () { pdfFacture(d); }, p.info.tel, PIL.messageFacture(p, d, false)); }; });
+    document.querySelectorAll("[data-drel]").forEach(function (bt) { bt.onclick = function () { var d = p.factu.docs[+bt.dataset.drel]; PIL.envoyer(function () { pdfFacture(d); }, p.info.tel, PIL.messageFacture(p, d, true)); }; });
     // situation
     document.querySelectorAll("[data-sp]").forEach(function (el) { el.onchange = function () { var prec = derniereSituation(p), min = prec ? +prec.pcts[el.dataset.sp] || 0 : 0; X.ui.sitPct[el.dataset.sp] = Math.max(min, Math.min(100, +el.value || 0)); X.renderPage(); }; });
     if ((b = $("rstSit"))) b.onclick = function () { X.ui.sitPct = null; X.renderPage(); };
@@ -2852,7 +2894,7 @@ var MOD = (function () {
       p.factu.docs.push({ type: "situation", num: numFacture(), sitNum: n, date: jour(), pcts: JSON.parse(JSON.stringify(X.ui.sitPct)), cumulHT: s.cumulHT, precedentHT: s.precedentHT, periodeHT: s.periodeHT, rembAcompte: s.rembAcompte, rembAcompteCum: s.rembAcompteCum, baseHT: s.baseHT, tva: s.tva, ttc: s.ttc, retenue: s.retenue, net: s.net, taux: s.tauxAvancement, dgd: s.tauxAvancement >= 99.99, paiements: [] });
       X.ui.sitPct = null; X.ui.sub.factu = "docs"; X.save(); X.renderPage(); X.toast("Situation n° " + n + " émise");
     };
-    if ((b = $("addAch"))) b.onclick = function () { p.factu.achats.push({ date: jour(), four: "", lib: "", mt: 0 }); X.save(); X.renderPage(); };
+    if ((b = $("addAch"))) b.onclick = function () { p.factu.achats.push({ date: jour(), four: "", lib: "", lot: "", res: "", qte: 0, mt: 0, delai: "" }); X.save(); X.renderPage(); };
     document.querySelectorAll("[data-adel]").forEach(function (bt) { bt.onclick = function () { p.factu.achats.splice(+bt.dataset.adel, 1); X.save(); X.renderPage(); }; });
   }
 
@@ -3090,6 +3132,38 @@ var TYP = (function () {
   function uid() { return "r" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5); }
 
   /* ---------------- PETITS TRAVAUX ---------------- */
+  // Modèles : x = paramètre saisi. Ligne : [code ou "", quantité(x), désignation, unité, lot, PU libre(x), jours]
+  var MODELES = [
+    { id: "sdb", nom: "Rénovation de salle de bain", param: "Surface au sol (m²)", def: 5, lignes: [
+      ["", function () { return 1; }, "Dépose de l'existant et évacuation des gravats", "FF", "L12", function (x) { return 40000 + 8000 * x; }, 2],
+      ["9.7", function () { return 3; }], ["9.8", function () { return 3; }], ["8.1", function (x) { return x; }], ["8.3", function (x) { return Math.round(4 * Math.sqrt(x) * 2.1); }],
+      ["9.1", function () { return 1; }], ["9.2", function () { return 1; }], ["9.3", function () { return 1; }], ["10.1", function () { return 1; }], ["11.2", function (x) { return x; }]] },
+    { id: "carr", nom: "Carrelage d'une pièce", param: "Surface au sol (m²)", def: 20, lignes: [
+      ["", function () { return 1; }, "Dépose de l'ancien revêtement et préparation du support", "FF", "L8", function (x) { return 15000 + 1500 * x; }, 1],
+      ["8.1", function (x) { return x; }], ["8.4", function (x) { return Math.round(4 * Math.sqrt(x)); }]] },
+    { id: "pein", nom: "Peinture d'un logement", param: "Surface habitable (m²)", def: 80, lignes: [
+      ["", function () { return 1; }, "Protection, rebouchage et ponçage des supports", "FF", "L11", function (x) { return 500 * x; }, 1],
+      ["11.1", function (x) { return Math.round(x * 2.7); }], ["11.2", function (x) { return x; }]] },
+    { id: "clot", nom: "Mur de clôture avec portail", param: "Longueur (ml)", def: 30, lignes: [
+      ["12.3", function (x) { return x; }], ["5.2", function (x) { return Math.round(x * 2.5 * 2); }], ["11.3", function (x) { return Math.round(x * 2.5 * 2); }],
+      ["", function () { return 1; }, "Portail métallique 300×200, y compris pose et peinture", "u", "L7", function () { return 450000; }, 2]] },
+    { id: "etan", nom: "Réfection d'étanchéité de terrasse", param: "Surface de la terrasse (m²)", def: 100, lignes: [
+      ["", function () { return 1; }, "Dépose de l'ancienne étanchéité et nettoyage du support", "FF", "L4", function (x) { return 800 * x; }, 2],
+      ["4.1", function (x) { return x; }], ["4.2", function (x) { return x; }], ["4.3", function (x) { return Math.max(1, Math.ceil(x / 50)); }]] },
+    { id: "cuis", nom: "Aménagement de cuisine (évier, faïence, prises)", param: "Longueur du plan de travail (ml)", def: 3, lignes: [
+      ["", function (x) { return x; }, "Plan de travail maçonné et carrelé", "ml", "L8", function () { return 45000; }, 2],
+      ["9.4", function () { return 1; }], ["9.7", function () { return 1; }], ["9.8", function () { return 1; }], ["8.3", function (x) { return Math.round(x * 0.6 * 10) / 10; }], ["10.2", function () { return 4; }], ["10.1", function () { return 1; }]] },
+    { id: "elec", nom: "Rénovation électrique", param: "Nombre de pièces", def: 4, lignes: [
+      ["10.1", function (x) { return Math.ceil(x * 1.5); }], ["10.2", function (x) { return x * 3; }], ["10.3", function (x) { return x; }], ["10.5", function () { return 1; }], ["10.6", function () { return 1; }]] }
+  ];
+  function ajouterModele(p, m, x) {
+    m.lignes.forEach(function (L) {
+      var code = L[0], o = code && S().ouv[code];
+      if (code && !o) return;
+      p.rapide.push(o ? { id: uid(), code: code, lot: o.lot, d: "", loc: m.nom, u: o.u, q: L[1](x), pu: "", jours: "" }
+        : { id: uid(), code: "", lot: L[4], d: L[2], loc: m.nom, u: L[3], q: L[1](x), pu: Math.round(L[5](x) / 500) * 500, jours: L[6] || 1 });
+    });
+  }
   function pageRapide() {
     var p = P(), q = X.Q(), parId = {}, ouv = S().ouv;
     q.lignes.forEach(function (l) { parId[l.id] = l; });
@@ -3119,7 +3193,8 @@ var TYP = (function () {
     });
     h += "</table>" + (!(p.rapide || []).length ? '<p class="hint">Aucune ligne. Ajoutez un ouvrage de la bibliothèque ou une ligne libre.</p>' : "") +
       '<div class="bar-btn" style="margin-top:10px"><button class="btn p" id="addRL">+ Ouvrage de la bibliothèque</button><button class="btn" id="addRF">+ Ligne libre</button></div>' +
-      '<p class="hint">P.U. vide = prix calculé par la bibliothèque (déboursé × K). « Jours » = durée estimée ; vide = calculée à partir de la main-d\'œuvre.</p></div>';
+      '<div class="bar-btn" style="margin-top:6px"><label>Modèle prêt à l\'emploi : <select id="modSel">' + MODELES.map(function (m) { return '<option value="' + m.id + '"' + (X.ui.mod === m.id ? " selected" : "") + ">" + esc(m.nom) + "</option>"; }).join("") + '</select></label><label id="modLab">' + esc((MODELES.filter(function (m) { return m.id === X.ui.mod; })[0] || MODELES[0]).param) + ' <input type="number" id="modX" step="any" style="width:80px" value="' + (MODELES.filter(function (m) { return m.id === X.ui.mod; })[0] || MODELES[0]).def + '"></label><button class="btn" id="modAdd">Ajouter ce modèle au devis</button></div>' +
+      '<p class="hint">P.U. vide = prix calculé par la bibliothèque (déboursé × K). « Jours » = durée estimée ; vide = calculée à partir de la main-d\'œuvre. Les prix des lignes libres des modèles sont indicatifs : ajustez-les.</p></div>';
     h += '<div class="grid2"><div class="card"><h2>Total</h2><table class="t"><tr><td class="l">Total HT</td><td><b>' + fmt(q.ht) + "</b> FCFA</td></tr><tr><td class='l'>TVA " + S().ent.tva + " %</td><td>" + fmt(q.tva) + " FCFA</td></tr><tr><td class='l'><b>Total TTC</b></td><td><b>" + fmt(q.ttc) + "</b> FCFA</td></tr><tr><td class='l'>Marge brute prévue</td><td>" + fmt(q.ht - q.ds) + " FCFA</td></tr></table>" +
       '<div class="bar-btn" style="margin-top:10px"><a class="btn p" href="#" data-go="prix:devis">Préparer le devis client (PDF) →</a></div></div>' +
       '<div class="card"><h2>Bonnes pratiques petits travaux</h2><ul class="hint" style="line-height:1.6;margin:0;padding-left:18px"><li>Faites signer le devis « bon pour accord » avant de commencer.</li><li>Encaissez l\'acompte prévu dans les Paramètres (' + S().ent.acompte + ' %).</li><li>Prenez des photos avant et après (Suivi terrain).</li><li>Terminez par un procès-verbal de réception signé (OPC › Réception).</li><li>Travaux de gros œuvre, clôture de plus de 2 m ou modification de façade : vérifiez l\'autorisation de construire à la mairie.</li></ul></div></div>';
@@ -3129,6 +3204,8 @@ var TYP = (function () {
     var p = P();
     X.linkGo();
     $("addRL").onclick = function () { var k = "8.1", o = S().ouv[k]; p.rapide.push({ id: uid(), code: k, lot: o.lot, d: "", loc: "", u: o.u, q: 1, pu: "", jours: "" }); X.save(); X.renderPage(); };
+    $("modSel").onchange = function () { X.ui.mod = this.value; X.renderPage(); };
+    $("modAdd").onclick = function () { var m = MODELES.filter(function (x) { return x.id === $("modSel").value; })[0], x = parseFloat($("modX").value) || m.def; ajouterModele(p, m, x); X.save(); X.renderPage(); X.toast("Modèle « " + m.nom + " » ajouté : ajustez les quantités et les prix"); };
     $("addRF").onclick = function () { p.rapide.push({ id: uid(), code: "", lot: "L12", d: "", loc: "", u: "FF", q: 1, pu: 0, jours: 1 }); X.save(); X.renderPage(); };
     document.querySelectorAll("[data-rcode]").forEach(function (el) {
       el.onchange = function () { var r = p.rapide[+el.dataset.rcode], o = S().ouv[el.value]; r.code = el.value; if (o) { r.lot = o.lot; r.u = o.u; r.pu = ""; } X.save(); X.renderPage(); };
@@ -3260,6 +3337,477 @@ var TYP = (function () {
   }
 
   return { pageRapide: pageRapide, postRapide: postRapide, marcheHTML: marcheHTML, postMarche: postMarche, receptionHTML: receptionHTML, postReception: postReception, pdfPV: pdfPV, procedure: procedure };
+})();
+</script>
+<script>/* =========================================================
+   2AM CONSTRUCTION — Pilotage avancé
+   · Sauvegarde automatique (dossier choisi, avec photos)
+   · Archives (base de données des chantiers) et REX automatique
+   · Apprentissage : prix, productivités et pertes recalés sur vos chantiers
+   · Risque de délai (simulation Monte-Carlo P50 / P80 / P90)
+   · Comparateur de fournisseurs
+   · Envoi WhatsApp et relances de paiement
+   ========================================================= */
+var PIL = (function () {
+  var X = APP.X, Cc = CALC, PL = PLAN, D = DATA, esc = X.esc, fmt = X.fmt, inp = X.inp, fld = X.fld;
+  var $ = function (id) { return document.getElementById(id); };
+  function S() { return X.S(); }
+  function P() { return X.P(); }
+  function fr(s) { return PL.fr(s); }
+  function today() { return PL.d2s(new Date()); }
+  function n(v) { v = parseFloat(v); return isFinite(v) ? v : 0; }
+  function badge(niv, t) { return '<span class="badge ' + niv + '">' + esc(t) + "</span>"; }
+  function moy(a) { return a.length ? a.reduce(function (s, x) { return s + x; }, 0) / a.length : 0; }
+  var LIBM = { MAC: "Maçons", FER: "Ferrailleurs", COFR: "Coffreurs", MAN: "Manœuvres", CARR: "Carreleurs", PEIN: "Peintres", PLOM: "Plombiers", ELEC: "Électriciens", MEN: "Menuisiers", ETANC: "Étancheurs" };
+
+  /* =====================================================
+     1. SAUVEGARDE AUTOMATIQUE
+     ===================================================== */
+  var BK = { handle: null, etat: "aucun", sale: false, t: null, dernier: 0, enCours: false };
+  var supporte = typeof window !== "undefined" && "showDirectoryPicker" in window;
+  function complet() {
+    return X.photoAll().then(function (ph) { return { type: "sauvegarde2AM", version: X.VERSION, date: new Date().toISOString(), state: S(), photos: ph }; });
+  }
+  function nomFichier() { return "2AM_sauvegarde_" + today() + ".json"; }
+  function initSauvegarde() {
+    if (!supporte) return;
+    X.kvGet("dirHandle").then(function (h) {
+      if (!h) return;
+      BK.handle = h;
+      try { h.queryPermission({ mode: "readwrite" }).then(function (st) { BK.etat = st === "granted" ? "actif" : "a-reactiver"; rafraichir(); }); } catch (e) { BK.etat = "a-reactiver"; }
+    });
+    document.addEventListener("visibilitychange", function () { if (document.visibilityState === "hidden" && BK.sale) ecrire(); });
+  }
+  function rafraichir() { if (X.ui.page === "dash" || X.ui.page === "params") X.renderPage(); }
+  function choisirDossier() {
+    if (!supporte) { X.toast("Votre navigateur ne permet pas la sauvegarde automatique : utilisez Edge ou Chrome sur ordinateur"); return; }
+    window.showDirectoryPicker({ id: "sauvegarde2AM", mode: "readwrite" }).then(function (h) {
+      BK.handle = h; BK.etat = "actif"; X.kvPut("dirHandle", h); S().sauvegarde.dossier = h.name; X.save();
+      ecrire(true).then(function () { X.toast("Sauvegarde automatique activée dans « " + h.name + " »"); rafraichir(); });
+    }).catch(function () {});
+  }
+  function reactiver() {
+    if (!BK.handle) return choisirDossier();
+    BK.handle.requestPermission({ mode: "readwrite" }).then(function (st) {
+      BK.etat = st === "granted" ? "actif" : "a-reactiver";
+      if (BK.etat === "actif") ecrire(true).then(function () { X.toast("Sauvegarde automatique réactivée"); rafraichir(); });
+    }).catch(function () {});
+  }
+  function apresEnregistrement() {
+    BK.sale = true;
+    if (BK.etat !== "actif") return;
+    clearTimeout(BK.t);
+    var attente = Math.max(20000, 10 * 60 * 1000 - (Date.now() - BK.dernier));   // au plus une écriture toutes les 10 min
+    BK.t = setTimeout(ecrire, attente);
+  }
+  function ecrire(force) {
+    if (!BK.handle || BK.etat !== "actif" || BK.enCours) return Promise.resolve(false);
+    if (!force && !BK.sale) return Promise.resolve(false);
+    BK.enCours = true;
+    return complet().then(function (obj) {
+      return BK.handle.getFileHandle(nomFichier(), { create: true }).then(function (fh) {
+        return fh.createWritable().then(function (w) { return w.write(JSON.stringify(obj)).then(function () { return w.close(); }); });
+      });
+    }).then(function () {
+      BK.sale = false; BK.dernier = Date.now(); S().sauvegarde.derniere = new Date().toISOString(); S().sauvegarde.dossier = BK.handle.name;
+      return nettoyer();
+    }).then(function () { BK.enCours = false; return true; }, function () { BK.enCours = false; BK.etat = "a-reactiver"; return false; });
+  }
+  function nettoyer() {   // garde les 21 dernières sauvegardes quotidiennes
+    var noms = [], it;
+    try { it = BK.handle.keys(); } catch (e) { return Promise.resolve(); }
+    function suiv() { return it.next().then(function (r) { if (r.done) return; if (/^2AM_sauvegarde_\d{4}-\d{2}-\d{2}\.json$/.test(r.value)) noms.push(r.value); return suiv(); }); }
+    return suiv().then(function () { noms.sort(); var trop = noms.slice(0, Math.max(0, noms.length - 21)); return Promise.all(trop.map(function (nm) { return BK.handle.removeEntry(nm).catch(function () {}); })); }).catch(function () {});
+  }
+  function exporter() {
+    complet().then(function (obj) { X.saveFile(new Blob([JSON.stringify(obj)], { type: "application/json" }), nomFichier()); S().sauvegarde.derniere = new Date().toISOString(); S().sauvegarde.export = today(); X.save(); });
+  }
+  function importer(o) {   // accepte l'ancien format (état seul) et le nouveau (état + photos)
+    var st = o.type === "sauvegarde2AM" ? o.state : o, ph = o.type === "sauvegarde2AM" ? o.photos || {} : {};
+    if (!st || !st.projects) return Promise.reject("format");
+    return Promise.all(Object.keys(ph).map(function (k) { return X.photoPut(k, ph[k]); })).then(function () { X.setStateRaw(st); X.save(); X.renderTop(); X.renderPage(); return st.projects.length; });
+  }
+  function sauvegardeHTML() {
+    var sv = S().sauvegarde, d = sv.derniere ? new Date(sv.derniere) : null;
+    var etat = BK.etat === "actif" ? badge("vert", "Active") + " dans le dossier « " + esc(BK.handle.name) + " »" : BK.etat === "a-reactiver" ? badge("orange", "À réactiver") + " (le navigateur redemande l'autorisation après un redémarrage)" : supporte ? badge("rouge", "Non configurée") : badge("orange", "Non disponible sur ce navigateur");
+    return '<div class="card"><h2>Sauvegardes</h2><p>Sauvegarde automatique : ' + etat + "</p><p class=\"hint\">Dernière sauvegarde complète : " + (d ? d.toLocaleString("fr-FR") : "jamais") + ". Elle contient tous vos projets, archives, paramètres <b>et les photos</b>. Une sauvegarde par jour est gardée, les 21 dernières sont conservées.</p>" +
+      '<p class="hint"><b>Conseil :</b> choisissez un dossier synchronisé avec OneDrive ou Google Drive. Vous aurez ainsi une copie en ligne, même si l\'ordinateur est perdu ou en panne.</p>' +
+      '<div class="bar-btn">' + (supporte ? '<button class="btn p" id="bkChoisir">' + (BK.handle ? "Changer de dossier" : "Choisir le dossier de sauvegarde automatique") + "</button>" + (BK.etat === "a-reactiver" ? '<button class="btn p" id="bkActiver">Réactiver</button>' : "") + (BK.etat === "actif" ? '<button class="btn" id="bkMaint">Sauvegarder maintenant</button>' : "") : "") +
+      '<button class="btn" id="expJ">Télécharger une sauvegarde complète</button><label class="btn">Restaurer une sauvegarde<input type="file" id="impJ" accept=".json,application/json" hidden></label><button class="btn danger" id="rstAll">Tout réinitialiser</button></div></div>';
+  }
+  function postSauvegarde() {
+    var b;
+    if ((b = $("bkMaint"))) b.onclick = function () { ecrire(true).then(function (ok) { X.toast(ok ? "Sauvegarde enregistrée" : "Sauvegarde impossible : réactivez-la"); X.renderPage(); }); };
+    $("expJ").onclick = exporter;
+    $("impJ").onchange = function () {
+      var f = this.files[0]; if (!f) return;
+      f.text().then(function (t) { return importer(JSON.parse(t)); }).then(function (nb) { X.toast("Sauvegarde restaurée : " + nb + " projet(s)"); }, function () { X.toast("Fichier invalide"); });
+    };
+  }
+  function dashHTML() {
+    var sv = S().sauvegarde, h = "";
+    if (BK.etat === "a-reactiver") h += '<div class="note">La sauvegarde automatique est en pause (le navigateur redemande l\'autorisation). <button class="btn sm p" id="bkActiver">Réactiver la sauvegarde</button></div>';
+    else if (BK.etat !== "actif") {
+      var age = sv.derniere ? PL.diff(sv.derniere.slice(0, 10), today()) : null;
+      if (age == null || age > 7) h += '<div class="note"><b>Vos données ne sont enregistrées que sur cet ordinateur.</b> ' + (age == null ? "Aucune sauvegarde n'a encore été faite." : "Dernière sauvegarde il y a " + age + " jours.") + " " + (supporte ? '<button class="btn sm p" id="bkChoisir">Activer la sauvegarde automatique</button>' : '<a href="#" data-go="params">Télécharger une sauvegarde</a>') + "</div>";
+    }
+    return h;
+  }
+
+  /* =====================================================
+     2. ENVOI WHATSAPP ET RELANCES
+     ===================================================== */
+  function numeroWA(tel) {
+    var d = String(tel || "").replace(/[^\d+]/g, "");
+    if (d.indexOf("+") === 0) return d.slice(1);
+    if (d.indexOf("00") === 0) return d.slice(2);
+    if (d.length === 9 && /^[37]/.test(d)) return "221" + d;           // numéro sénégalais
+    if (d.length === 10 && d[0] === "0") return "33" + d.slice(1);       // numéro français
+    return d;
+  }
+  function envoyer(genererPDF, tel, msg) { X.ui.envoi = { tel: tel, msg: msg }; genererPDF(); }
+  function partagerFichier(blob, nom, env) {
+    var file = null;
+    try { file = new File([blob], nom, { type: blob.type || "application/pdf" }); } catch (e) {}
+    if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
+      navigator.share({ files: [file], text: env.msg, title: nom }).catch(function () {});
+      return;
+    }
+    X.saveFile(blob, nom);
+    var num = numeroWA(env.tel), url = "https://wa.me/" + num + "?text=" + encodeURIComponent(env.msg);
+    setTimeout(function () { window.open(url, "_blank"); }, 400);
+    X.toast(num ? "PDF téléchargé : joignez-le dans la conversation WhatsApp qui s'ouvre" : "PDF téléchargé : numéro du client absent (fiche projet)");
+  }
+  function messageFacture(p, d, relance) {
+    var e = S().ent, du = d.type === "situation" ? d.net : d.ttc, paye = (d.paiements || []).reduce(function (s, x) { return s + n(x.mt); }, 0), ech = PL.addDays(d.date, n(e.delaiPaiement) || 30);
+    var c = p.info.client ? " " + p.info.client : "";
+    if (!relance) return "Bonjour" + c + ", veuillez trouver ci-joint la facture n° " + d.num + " du " + fr(d.date) + " d'un montant de " + fmt(du) + " FCFA, payable avant le " + fr(ech) + ". " + (e.paiementInfo || "") + " Cordialement, " + e.responsable + " – " + e.nom + ".";
+    return "Bonjour" + c + ", sauf erreur de notre part, la facture n° " + d.num + " du " + fr(d.date) + " (chantier « " + p.info.nom + " ») reste à régler pour un montant de " + fmt(du - paye) + " FCFA ; son échéance était le " + fr(ech) + ". Merci de procéder au règlement dès que possible. " + (e.paiementInfo || "") + " Si le paiement a déjà été effectué, merci de ne pas tenir compte de ce message. Cordialement, " + e.responsable + " – " + e.nom + ".";
+  }
+
+  /* =====================================================
+     3. REX AUTOMATIQUE
+     ===================================================== */
+  function depensesReelles(p) {
+    var caisse = (p.suivi.rapports || []).reduce(function (s, r) { return s + (r.dep || []).reduce(function (a, d) { return a + n(d.mt); }, 0); }, 0);
+    return caisse + (p.factu.achats || []).reduce(function (s, a) { return s + n(a.mt); }, 0);
+  }
+  function calculerREX(p) {
+    var st = X.ST(), q = Cc.dqe(p, st), rcp = p.reception || {}, fin0 = (rcp.decision !== "refus" && rcp.date) || p.dateReception || today();
+    var F = PL.prevision(p, q, fin0), av = F.av || {}, cfg = F.cfg, prodUt = Object.assign({}, S().ent.productivite || {});
+    var debutReel = null, finReelle = null;
+    F.taches.forEach(function (t) { var a = av[t.id]; if (a && a.debut && (!debutReel || a.debut < debutReel)) debutReel = a.debut; if (a && a.fin && (!finReelle || a.fin > finReelle)) finReelle = a.fin; });
+    if (rcp.date && rcp.decision !== "refus") finReelle = rcp.date;
+    var promis = p.info.dateLivraison || F.refFin;
+    // Tâches : durée prévue vs réelle (jours ouvrés)
+    var taches = F.taches.filter(function (t) { var a = av[t.id]; return a && a.debut && a.fin && t.dur > 0 && !/^(INST|RECEP)$/.test(t.id); }).map(function (t) {
+      var a = av[t.id], dr = Math.max(1, PL.joursOuvres(a.debut, a.fin, cfg)), f = t.metier ? n(prodUt[t.metier]) || 1 : 1;
+      return { id: t.id, nom: t.nom, metier: t.metier, prevu: t.dur, reel: dr, ratio: dr / t.dur, ratioBase: dr / t.dur * f };
+    });
+    // Main-d'œuvre : journées déclarées vs théoriques (si les rapports couvrent assez de jours)
+    var raps = p.suivi.rapports || [], jours = debutReel && finReelle ? Math.max(1, PL.joursOuvres(debutReel, finReelle, cfg)) : 1;
+    var couverture = Math.min(1, raps.length / jours), reel = {}, theo = {}, mo = [];
+    raps.forEach(function (r) { Object.keys(r.eff || {}).forEach(function (k) { reel[k] = (reel[k] || 0) + n(r.eff[k]); }); });
+    F.taches.forEach(function (t) { Object.keys(t.mo || {}).forEach(function (k) { theo[k] = (theo[k] || 0) + t.mo[k] * t.pct / 100; }); });
+    Object.keys(LIBM).forEach(function (k) {
+      var f = n(prodUt[k]) || 1, tr = taches.filter(function (x) { return x.metier === k; });
+      var r = null, src = "", rj = theo[k] >= 5 && reel[k] > 0 ? reel[k] / theo[k] : null;
+      // garde-fou : un rapport journées très éloigné de 1 signale des effectifs mal déclarés → on se rabat sur les durées
+      if (couverture >= 0.6 && rj != null && rj >= 0.6 && rj <= 1.8) { r = rj; src = "journées déclarées"; }
+      else if (tr.length) { r = moy(tr.map(function (x) { return x.ratio; })); src = "durées des tâches" + (rj != null ? " (effectifs déclarés peu fiables)" : ""); }
+      if (r != null) mo.push({ code: k, nom: LIBM[k], theo: theo[k] || 0, reel: reel[k] || 0, ratio: r, ratioBase: r * f, source: src });
+    });
+    // Matériaux : consommations déclarées vs théoriques (pertes comprises)
+    var cons = PL.consommations(p), th = {}, mat = [];
+    F.taches.forEach(function (t) { var b = PL.besoinsTache(t, q); Object.keys(b).forEach(function (k) { th[k] = (th[k] || 0) + b[k] * t.pct / 100; }); });
+    Object.keys(cons).forEach(function (k) {
+      var c = n(cons[k]) * (k === "CIM" ? 1 / 20 : 1), t = n(th[k]), r = q.cat.res[k];
+      if (c > 0 && t > 0 && r) mat.push({ code: k, nom: r.d, u: r.u, theo: t, reel: c, ratio: c / t, perteUt: r.perte, multBase: c / t * (1 + r.perte / 100), fiable: c / t >= 0.7 && c / t <= 1.6 });
+    });
+    // Prix d'achat réels vs bibliothèque
+    var coef = q.cat.coef || 1, pr = {};
+    (p.factu.achats || []).forEach(function (a) { if (a.res && n(a.qte) > 0 && n(a.mt) > 0 && q.cat.res[a.res]) { (pr[a.res] = pr[a.res] || []).push(n(a.mt) / n(a.qte)); } });
+    var prix = Object.keys(pr).map(function (k) { var r = q.cat.res[k], m = moy(pr[k]); return { code: k, nom: r.d, u: r.u, biblio: r.p, reel: m, ratio: m / r.p, dakar: m / coef, n: pr[k].length }; });
+    // Finances
+    var docs = p.factu.docs || [], sits = docs.filter(function (d) { return d.type === "situation"; });
+    var factureHT = sits.length ? n(sits[sits.length - 1].cumulHT) : 0, marcheHT = p.factu.marche ? n(p.factu.marche.ht) : q.ht;
+    var ca = factureHT > 0 ? factureHT : marcheHT * F.avancement / 100, dep = depensesReelles(p), depComplet = dep >= 0.6 * q.ds * F.avancement / 100;
+    var encaisse = docs.reduce(function (s, d) { return s + (d.paiements || []).reduce(function (a, x) { return a + n(x.mt); }, 0); }, 0);
+    var res = {
+      date: today(), version: X.VERSION, region: p.info.region, mode: p.mode, public: (p.marche || {}).type === "public", surface: q.surface,
+      dates: { etude: p.info.date, creation: (p.created || "").slice(0, 10), debutPrevu: cfg.debut, debutReel: debutReel, finPrevue: F.refFin, finReelle: finReelle, promis: promis, reception: rcp.date || "" },
+      ecartDelai: finReelle && promis ? PL.diff(promis, finReelle) : null, dureeReelle: debutReel && finReelle ? PL.diff(debutReel, finReelle) : null, dureePrevue: F.refFin ? PL.diff(cfg.debut, F.refFin) : null,
+      avancement: F.avancement, taches: taches, mo: mo, couverture: couverture, mat: mat, prix: prix, prodUtilisee: prodUt,
+      fin: { marcheHT: marcheHT, factureHT: factureHT, ca: ca, dsPrevu: q.ds, depenses: dep, margePrevue: q.ht - q.ds, margePrevuePct: q.ht ? 100 * (q.ht - q.ds) / q.ht : 0, margeReelle: depComplet ? ca - dep : null, margeReellePct: depComplet && ca ? 100 * (ca - dep) / ca : null, depComplet: depComplet, encaisse: encaisse },
+      qualite: { reserves: (p.opc.reserves || []).length, reservesOuvertes: (p.opc.reserves || []).filter(function (r) { return !r.levee; }).length, incidents: raps.filter(function (r) { return r.incidents; }).length, rapports: raps.length },
+      notes: (p.rex && p.rex.notes) || { positif: "", negatif: "", actions: "" }
+    };
+    res.conclusions = conclusions(res);
+    return res;
+  }
+  function conclusions(r) {
+    var c = [];
+    if (r.ecartDelai != null) c.push(r.ecartDelai > 0 ? "Livré avec " + r.ecartDelai + " jours de retard sur la date promise." : "Livré à l'heure" + (r.ecartDelai < 0 ? ", avec " + (-r.ecartDelai) + " jours d'avance." : "."));
+    r.mo.forEach(function (m) { if (Math.abs(m.ratio - 1) >= 0.12) c.push(m.nom + " : " + (m.ratio > 1 ? Math.round(100 * (m.ratio - 1)) + " % plus lents" : Math.round(100 * (1 - m.ratio)) + " % plus rapides") + " que prévu (" + m.source + ")."); });
+    r.mat.forEach(function (m) { if (!m.fiable) c.push(m.nom + " : consommation déclarée très éloignée du théorique (" + Math.round(100 * m.ratio) + " %) — déclarations probablement incomplètes, non utilisée pour l'apprentissage."); else if (Math.abs(m.ratio - 1) >= 0.08) c.push(m.nom + " : consommation " + (m.ratio > 1 ? "+" : "") + Math.round(100 * (m.ratio - 1)) + " % par rapport au théorique."); });
+    r.prix.forEach(function (x) { if (Math.abs(x.ratio - 1) >= 0.05) c.push(x.nom + " : payé " + fmt(x.reel) + " FCFA/" + x.u + ", soit " + (x.ratio > 1 ? "+" : "") + Math.round(100 * (x.ratio - 1)) + " % par rapport à la bibliothèque."); });
+    if (!r.fin.depComplet && r.fin.depenses > 0) c.push("Dépenses saisies incomplètes (" + fmt(r.fin.depenses) + " FCFA pour " + fmt(r.fin.dsPrevu) + " FCFA de déboursé prévu) : marge réelle non calculée. Saisissez tous les achats et paiements de tâcherons.");
+    if (r.fin.margeReellePct != null) c.push("Marge réelle " + fmt(r.fin.margeReellePct, 1) + " % pour " + fmt(r.fin.margePrevuePct, 1) + " % prévue.");
+    if (r.qualite.reserves) c.push(r.qualite.reserves + " réserve(s) à la réception" + (r.qualite.reservesOuvertes ? ", dont " + r.qualite.reservesOuvertes + " encore ouverte(s)." : ", toutes levées."));
+    if (r.couverture < 0.6) c.push("Rapports terrain incomplets (" + Math.round(100 * r.couverture) + " % des jours couverts) : le REX est moins précis. Demandez un rapport par jour de travail.");
+    return c;
+  }
+  function cloturer(p) {
+    p.rex = calculerREX(p); p.statut = "termine"; p.archive = true; p.dateArchive = today();
+    if (!p.dateReception && p.reception && p.reception.date && p.reception.decision !== "refus") p.dateReception = p.reception.date;
+  }
+
+  /* =====================================================
+     4. APPRENTISSAGE
+     ===================================================== */
+  var K_PRIOR = 2;   // poids de la valeur de référence (équivaut à 2 chantiers)
+  function suggestions() {
+    var s = S(), out = [], rexs = s.projects.filter(function (p) { return p.rex; });
+    // Productivité par métier
+    Object.keys(LIBM).forEach(function (k) {
+      var obs = []; rexs.forEach(function (p) { p.rex.mo.forEach(function (m) { if (m.code === k) obs.push(Math.min(1.8, Math.max(0.6, m.ratioBase))); }); });
+      if (!obs.length) return;
+      var est = (obs.reduce(function (a, b) { return a + b; }, 0) + K_PRIOR) / (obs.length + K_PRIOR), cur = n(s.ent.productivite[k]) || 1;
+      out.push({ cle: "prod:" + k, type: "Productivité", nom: LIBM[k], u: "coef. temps", cur: cur, obs: obs, prop: Math.round(est * 100) / 100, effet: "Durées et coût de main-d'œuvre × " + (Math.round(est * 100) / 100).toFixed(2) + " (1 = cadence théorique)" });
+    });
+    // Pertes matériaux
+    var mats = {}; rexs.forEach(function (p) { p.rex.mat.forEach(function (m) { if (m.fiable !== false) (mats[m.code] = mats[m.code] || []).push(m.multBase); }); });
+    Object.keys(mats).forEach(function (k) {
+      var row = s.res.filter(function (r) { return r[0] === k; })[0]; if (!row) return;
+      var base = D.RES.filter(function (r) { return r[0] === k; })[0], p0 = base ? base[5] : row[5], obs = mats[k];
+      var est = (obs.reduce(function (a, b) { return a + b; }, 0) + K_PRIOR * (1 + p0 / 100)) / (obs.length + K_PRIOR), prop = Math.max(0, Math.round((est - 1) * 100));
+      out.push({ cle: "perte:" + k, type: "Pertes", nom: row[1], u: "% de perte", cur: row[5], obs: obs.map(function (x) { return Math.round((x - 1) * 100); }), prop: prop, effet: "Quantités commandées et prix des ouvrages qui l'utilisent" });
+    });
+    // Prix d'achat (tous chantiers, archivés ou non) ramenés à Dakar
+    var px = {};
+    s.projects.forEach(function (p) {
+      var coef = (D.REGIONS[p.info.region] || [1])[0];
+      (p.factu.achats || []).forEach(function (a) { if (a.res && n(a.qte) > 0 && n(a.mt) > 0) (px[a.res] = px[a.res] || []).push({ v: n(a.mt) / n(a.qte) / coef, d: a.date || "" }); });
+    });
+    Object.keys(px).forEach(function (k) {
+      var row = s.res.filter(function (r) { return r[0] === k; })[0]; if (!row) return;
+      var obs = px[k].sort(function (a, b) { return a.d < b.d ? 1 : -1; }).slice(0, 6).map(function (x) { return x.v; });   // 6 achats les plus récents
+      var est = (obs.reduce(function (a, b) { return a + b; }, 0) + row[3]) / (obs.length + 1);
+      out.push({ cle: "prix:" + k, type: "Prix", nom: row[1], u: "FCFA/" + row[2] + " (base Dakar)", cur: row[3], obs: obs.map(function (x) { return Math.round(x); }), prop: Math.round(est), effet: "Prix des ouvrages et des devis" });
+    });
+    return out.filter(function (x) { return Math.abs(x.prop / (x.cur || 1) - 1) >= 0.03 && !s.appr.ignore[x.cle + "=" + x.prop]; });
+  }
+  function appliquer(sg) {
+    var s = S(), a = sg.cle.split(":"), avant = sg.cur;
+    if (a[0] === "prod") s.ent.productivite[a[1]] = sg.prop;
+    if (a[0] === "perte" || a[0] === "prix") s.res.forEach(function (r) { if (r[0] === a[1]) { if (a[0] === "perte") r[5] = sg.prop; else r[3] = sg.prop; } });
+    s.appr.journal.unshift({ date: today(), cle: sg.cle, nom: sg.type + " · " + sg.nom, avant: avant, apres: sg.prop, n: sg.obs.length });
+  }
+  function annuler(i) {
+    var s = S(), j = s.appr.journal[i], a = j.cle.split(":");
+    if (a[0] === "prod") { if (j.avant === 1) delete s.ent.productivite[a[1]]; else s.ent.productivite[a[1]] = j.avant; }
+    else s.res.forEach(function (r) { if (r[0] === a[1]) { if (a[0] === "perte") r[5] = j.avant; else r[3] = j.avant; } });
+    s.appr.journal.splice(i, 1);
+  }
+  // Dispersion apprise des durées (pour la simulation de risque)
+  function dispersion() {
+    var l = []; S().projects.forEach(function (p) { if (p.rex) p.rex.taches.forEach(function (t) { if (t.ratioBase > 0) l.push(Math.log(t.ratioBase)); }); });
+    if (l.length < 5) return { sigma: 0.2, n: l.length, appris: false };
+    var m = moy(l), v = moy(l.map(function (x) { return (x - m) * (x - m); }));
+    return { sigma: Math.min(0.6, Math.max(0.08, Math.sqrt(v))), n: l.length, appris: true };
+  }
+
+  /* =====================================================
+     5. RISQUE DE DÉLAI (Monte-Carlo)
+     ===================================================== */
+  function gauss() { var u = 0, v = 0; while (!u) u = Math.random(); while (!v) v = Math.random(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); }
+  function simuler(p, N) {
+    var q = Cc.dqe(p, X.ST()), j = today(), enCours = p.statut === "chantier";
+    var F = enCours ? PL.prevision(p, q, j) : null, base = PL.planifier(p, q), T = enCours ? F.taches : base.taches, cfg = base.cfg, disp = dispersion();
+    var depart = enCours && j > cfg.debut ? j : cfg.debut, fins = [];
+    for (var it = 0; it < N; it++) {
+      var fin = {}, maxFin = depart;
+      T.forEach(function (t) {
+        var pct = enCours ? t.pct || 0 : 0;
+        if (pct >= 100) { fin[t.id] = t.pFin || t.fin; if (fin[t.id] > maxFin) maxFin = fin[t.id]; return; }
+        var req = depart;
+        t.deps.forEach(function (d) { var e = fin[d[0]]; if (e) { var r2 = PL.addDays(e, 1 + d[1]); if (r2 > req) req = r2; } });
+        if (pct > 0) req = depart;   // tâche déjà commencée : le reste démarre aujourd'hui
+        var f = Math.exp(gauss() * disp.sigma), dur = t.dur * (1 - pct / 100) * f;
+        if ((t.appro || t.ext) && Math.random() < 0.12) req = PL.addDays(req, 2 + Math.floor(Math.random() * 9));   // aléa : livraison, absence, panne
+        var e = PL.finTravail(PL.prochainOuvre(req, cfg), Math.max(0.5, dur), t.ext, cfg);
+        fin[t.id] = e; if (e > maxFin) maxFin = e;
+      });
+      fins.push(maxFin);
+    }
+    fins.sort();
+    var pc = function (x) { return fins[Math.min(N - 1, Math.floor(x * N))]; }, liv = p.info.dateLivraison;
+    return { p50: pc(0.5), p80: pc(0.8), p90: pc(0.9), min: fins[0], max: fins[N - 1], fins: fins, proba: liv ? fins.filter(function (f) { return f <= liv; }).length / N : null, liv: liv, prevu: enCours ? F.fin : base.fin, disp: disp, enCours: enCours };
+  }
+  var CACHE_RISQUE = {};
+  function risqueHTML(p) {
+    var cle = p.id + JSON.stringify([p.planning, p.info.dateLivraison, p.statut, (p.suivi.rapports || []).length, p.opc.avValide, S().ent.productivite]);
+    var r = CACHE_RISQUE[cle] || (CACHE_RISQUE = {}, CACHE_RISQUE[cle] = simuler(p, 300));
+    if (r.min === r.max) return '<div class="card"><h2>Date de livraison réaliste</h2><p>Il ne reste que la réception : fin prévue le <b>' + fr(r.p50) + "</b>.</p></div>";
+    var d0 = r.min, nj = Math.max(1, PL.diff(d0, r.max)), W = 640, H = 90, bins = new Array(30).fill(0);
+    r.fins.forEach(function (f) { bins[Math.min(29, Math.floor(29 * PL.diff(d0, f) / nj))]++; });
+    var mx = Math.max.apply(null, bins), xd = function (d) { return 10 + (W - 20) * PL.diff(d0, d) / nj; };
+    var svg = '<svg viewBox="0 0 ' + W + " " + (H + 18) + '" width="100%" style="max-width:640px">' + bins.map(function (b, i) { var x = 10 + (W - 20) * i / 30; return '<rect x="' + x + '" y="' + (H - H * b / mx) + '" width="' + ((W - 20) / 30 - 2) + '" height="' + (H * b / mx) + '" fill="#c9d3ea"/>'; }).join("");
+    [["P50", r.p50, "#1b2c5c"], ["P80", r.p80, "#e8892b"]].forEach(function (x) { svg += '<line x1="' + xd(x[1]) + '" x2="' + xd(x[1]) + '" y1="0" y2="' + H + '" stroke="' + x[2] + '" stroke-width="2"/><text x="' + (xd(x[1]) + 3) + '" y="11" font-size="11" fill="' + x[2] + '">' + x[0] + "</text>"; });
+    if (r.liv && r.liv >= d0 && r.liv <= r.max) svg += '<line x1="' + xd(r.liv) + '" x2="' + xd(r.liv) + '" y1="0" y2="' + H + '" stroke="#c0392b" stroke-dasharray="4 3" stroke-width="2"/><text x="' + (xd(r.liv) + 3) + '" y="' + (H - 4) + '" font-size="11" fill="#c0392b">promis</text>';
+    svg += '<text x="10" y="' + (H + 15) + '" font-size="11" fill="#777">' + fr(r.min) + '</text><text x="' + (W - 10) + '" y="' + (H + 15) + '" font-size="11" fill="#777" text-anchor="end">' + fr(r.max) + "</text></svg>";
+    var niv = r.proba == null ? null : r.proba >= 0.8 ? "vert" : r.proba >= 0.5 ? "orange" : "rouge";
+    var h = '<div class="card"><h2>Date de livraison réaliste' + (r.enCours ? " (à partir de l'avancement réel)" : "") + "</h2>" +
+      '<div class="kpis">' + X.kpi("Fin probable (P50)", fr(r.p50), "1 chance sur 2 de finir avant") + X.kpi("Fin sûre à 80 % (P80)", fr(r.p80), "date conseillée à promettre au client") + X.kpi("Fin sûre à 90 % (P90)", fr(r.p90), "en cas d'imprévus nombreux") +
+      X.kpi("Chances de tenir la date promise", r.proba == null ? "—" : Math.round(100 * r.proba) + " %", r.liv ? "promis le " + fr(r.liv) : "date de livraison à renseigner dans Projets") + "</div>" + svg +
+      (niv === "rouge" ? '<div class="note rouge">Moins d\'une chance sur deux de tenir la date promise. Renforcez les équipes des tâches critiques, travaillez le samedi, ou proposez au client le ' + fr(r.p80) + ".</div>" : niv === "orange" ? '<div class="note">La date promise est tenable mais fragile : surveillez les tâches critiques et anticipez les commandes.</div>' : "") +
+      '<p class="hint">300 simulations du chantier : durée de chaque tâche variable (dispersion ' + (r.disp.appris ? "apprise sur " + r.disp.n + " tâches de vos chantiers archivés" : "par défaut, en attendant vos REX") + "), aléas de livraison et d'absences, hivernage et jours ouvrés. Le planning déterministe donne le " + fr(r.prevu) + ".</p></div>";
+    return h;
+  }
+
+  /* =====================================================
+     6. FOURNISSEURS
+     ===================================================== */
+  function fournisseursHTML() {
+    var s = S(), parMat = {};
+    s.projects.forEach(function (p) {
+      (p.factu.achats || []).forEach(function (a) {
+        if (!a.res || !a.four || !(n(a.qte) > 0)) return;
+        var m = parMat[a.res] = parMat[a.res] || {}, f = m[a.four.trim()] = m[a.four.trim()] || { pu: [], delai: [], dernier: null, dpu: 0, mt: 0 };
+        var pu = n(a.mt) / n(a.qte); f.pu.push(pu); f.mt += n(a.mt); if (n(a.delai) > 0) f.delai.push(n(a.delai));
+        if (!f.dernier || (a.date || "") > f.dernier) { f.dernier = a.date || ""; f.dpu = pu; }
+      });
+    });
+    var ks = Object.keys(parMat);
+    var h = '<div class="card"><h2>Comparateur de fournisseurs (tous chantiers)</h2>';
+    if (!ks.length) return h + '<p class="hint">Aucun achat renseigné avec matériau et quantité. Dans Facturation › Dépenses du chantier, indiquez pour chaque achat le matériau et la quantité : les prix réels de chaque fournisseur apparaîtront ici.</p></div>';
+    ks.forEach(function (k) {
+      var r = s.res.filter(function (x) { return x[0] === k; })[0], m = parMat[k], fs = Object.keys(m).sort(function (a, b) { return moy(m[a].pu) - moy(m[b].pu); });
+      h += "<h3 style=\"margin:12px 0 4px\">" + esc(r ? r[1] : k) + ' <span class="hint">(bibliothèque : ' + fmt(r ? r[3] : 0) + " FCFA/" + esc(r ? r[2] : "") + ' à Dakar)</span></h3><table class="t"><tr><th class="l">Fournisseur</th><th>Achats</th><th>P.U. moyen</th><th>Dernier P.U.</th><th>Délai moyen</th><th>Montant total</th></tr>' +
+        fs.map(function (f, i) { var x = m[f]; return '<tr><td class="l">' + esc(f) + (i === 0 && fs.length > 1 ? " " + badge("vert", "le moins cher") : "") + "</td><td>" + x.pu.length + "</td><td>" + fmt(moy(x.pu)) + "</td><td>" + fmt(x.dpu) + (x.dernier ? ' <span class="hint">' + fr(x.dernier) + "</span>" : "") + "</td><td>" + (x.delai.length ? fmt(moy(x.delai), 1) + " j" : "—") + "</td><td>" + fmt(x.mt) + "</td></tr>"; }).join("") + "</table>";
+    });
+    return h + "</div>";
+  }
+
+  /* =====================================================
+     7. PAGE ARCHIVES, REX ET APPRENTISSAGE
+     ===================================================== */
+  function anneeDe(p) { var r = p.rex; return ((r && (r.dates.finReelle || r.dates.reception)) || p.dateArchive || p.info.date || "").slice(0, 4); }
+  function typeDe(p) { return (p.mode === "rapide" ? "Petits travaux" : "Chantier") + ((p.marche || {}).type === "public" ? " public" : ""); }
+  function pageArchives() {
+    X.ui.sub.archives = X.ui.sub.archives || "base";
+    var h = '<div class="head"><h1>Archives, REX et apprentissage</h1><p>Chaque chantier clôturé est archivé avec ses dates, ses montants et son retour d\'expérience (REX), calculé automatiquement. L\'application en tire des corrections de prix, de cadences et de pertes, que vous validez.</p></div>';
+    h += X.tabs("archives", [["base", "Archives"], ["rex", "REX du projet actif"], ["appr", "Apprentissage" + (suggestions().length ? " (" + suggestions().length + ")" : "")]]);
+    return h + ({ base: arcBase, rex: arcRex, appr: arcAppr }[X.ui.sub.archives] || arcBase)();
+  }
+  function filtres() { X.ui.arc = X.ui.arc || { an: "", type: "", region: "", txt: "" }; return X.ui.arc; }
+  function arcBase() {
+    var s = S(), f = filtres(), arch = s.projects.filter(function (p) { return p.archive; });
+    var liste = arch.filter(function (p) { var t = (p.info.nom + " " + p.info.client + " " + p.info.ville).toLowerCase(); return (!f.an || anneeDe(p) === f.an) && (!f.type || typeDe(p) === f.type) && (!f.region || p.info.region === f.region) && (!f.txt || t.indexOf(f.txt.toLowerCase()) >= 0); });
+    var aClot = s.projects.filter(function (p) { return !p.archive && (p.statut === "termine" || p.statut === "chantier"); });
+    var h = "";
+    if (aClot.length) h += '<div class="card"><h2>Chantiers à clôturer</h2><p class="hint">À la fin d\'un chantier (après le PV de réception) : « Clôturer et archiver » calcule le REX et range le projet dans les archives. Vous pourrez toujours le rouvrir.</p><table class="t"><tr><th class="l">Projet</th><th class="l">Statut</th><th>Réception</th><th></th></tr>' +
+      aClot.map(function (p) { return '<tr><td class="l">' + esc(p.info.nom) + '</td><td class="l">' + (p.statut === "termine" ? "Terminé" : "En cours") + "</td><td>" + (p.reception && p.reception.date && p.statut === "termine" ? fr(p.reception.date) : "—") + '</td><td><button class="btn sm' + (p.statut === "termine" ? " p" : "") + '" data-clot="' + p.id + '">Clôturer et archiver</button></td></tr>'; }).join("") + "</table></div>";
+    var R = liste.map(function (p) { return p.rex; }).filter(Boolean), aLh = R.filter(function (r) { return r.ecartDelai != null; });
+    var ca = R.reduce(function (a, r) { return a + n(r.fin.ca); }, 0), mg = R.filter(function (r) { return r.fin.margeReellePct != null; });
+    h += '<div class="kpis">' + X.kpi("Chantiers archivés", liste.length + (liste.length !== arch.length ? " / " + arch.length : ""), "selon les filtres") + X.kpi("Chiffre d'affaires", fmt(ca / 1e6, 1) + " M", "FCFA HT réalisés") +
+      X.kpi("Marge réelle moyenne", mg.length ? fmt(moy(mg.map(function (r) { return r.fin.margeReellePct; })), 1) + " %" : "—", mg.length ? "sur " + mg.length + " chantier(s) avec dépenses saisies" : "dépenses à saisir") +
+      X.kpi("Livrés à l'heure", aLh.length ? Math.round(100 * aLh.filter(function (r) { return r.ecartDelai <= 0; }).length / aLh.length) + " %" : "—", aLh.length ? "retard moyen " + fmt(moy(aLh.map(function (r) { return Math.max(0, r.ecartDelai); })), 1) + " j" : "") + "</div>";
+    var ans = arch.map(anneeDe).filter(function (x, i, a) { return x && a.indexOf(x) === i; }).sort().reverse(), types = arch.map(typeDe).filter(function (x, i, a) { return a.indexOf(x) === i; });
+    h += '<div class="card"><div class="bar-btn"><label>Année <select data-af="an"><option value="">Toutes</option>' + ans.map(function (a) { return "<option" + (a === f.an ? " selected" : "") + ">" + a + "</option>"; }).join("") + '</select></label><label>Type <select data-af="type"><option value="">Tous</option>' + types.map(function (a) { return "<option" + (a === f.type ? " selected" : "") + ">" + esc(a) + "</option>"; }).join("") + '</select></label><label>Région <select data-af="region"><option value="">Toutes</option>' + Object.keys(D.REGIONS).map(function (a) { return "<option" + (a === f.region ? " selected" : "") + ">" + a + "</option>"; }).join("") + '</select></label><input type="text" data-af="txt" placeholder="Rechercher (nom, client, ville)" value="' + esc(f.txt) + '"><button class="btn" id="csvArc">Exporter en tableur (CSV)</button></div>';
+    if (!liste.length) h += '<p class="hint">' + (arch.length ? "Aucun chantier ne correspond aux filtres." : "Aucun chantier archivé pour l'instant. Ils apparaîtront ici au fur et à mesure de vos clôtures.") + "</p>";
+    else h += '<table class="t"><tr><th class="l">Projet</th><th class="l">Client</th><th class="l">Lieu</th><th class="l">Type</th><th>Étude</th><th>Début réel</th><th>Fin réelle</th><th>Promis</th><th>Écart délai</th><th>Montant HT</th><th>Marge réelle</th><th></th></tr>' +
+      liste.map(function (p) {
+        var r = p.rex || { dates: {}, fin: {} }, d = r.dates, e = r.ecartDelai;
+        return '<tr><td class="l"><b>' + esc(p.info.nom) + '</b></td><td class="l">' + esc(p.info.client) + '</td><td class="l">' + esc(p.info.ville || p.info.region) + '</td><td class="l">' + esc(typeDe(p)) + "</td><td>" + fr(d.etude) + "</td><td>" + fr(d.debutReel) + "</td><td>" + fr(d.finReelle) + "</td><td>" + fr(d.promis) + "</td><td>" + (e == null ? "—" : e > 0 ? badge("rouge", "+" + e + " j") : badge("vert", e === 0 ? "à l'heure" : e + " j")) + "</td><td>" + fmt(r.fin.marcheHT) + "</td><td>" + (r.fin.margeReellePct == null ? "—" : fmt(r.fin.margeReellePct, 1) + " %") + '</td><td><button class="btn sm" data-arex="' + p.id + '">REX</button> <button class="btn sm" data-aouv="' + p.id + '">Ouvrir</button> <button class="btn sm" data-arouv="' + p.id + '">Désarchiver</button></td></tr>';
+      }).join("") + "</table>";
+    return h + "</div>";
+  }
+  function csvArchives() {
+    var lignes = [["Projet", "Client", "Ville", "Région", "Type", "Date étude", "Début prévu", "Début réel", "Fin prévue", "Fin réelle", "Livraison promise", "Écart délai (j)", "Marché HT", "Facturé HT", "Dépenses", "Marge prévue %", "Marge réelle %", "Surface m2", "Réserves", "Rapports terrain"]];
+    S().projects.filter(function (p) { return p.archive; }).forEach(function (p) {
+      var r = p.rex || { dates: {}, fin: {}, qualite: {} }, d = r.dates;
+      lignes.push([p.info.nom, p.info.client, p.info.ville, p.info.region, typeDe(p), d.etude, d.debutPrevu, d.debutReel, d.finPrevue, d.finReelle, d.promis, r.ecartDelai, Math.round(n(r.fin.marcheHT)), Math.round(n(r.fin.factureHT)), Math.round(n(r.fin.depenses)), r.fin.margePrevuePct != null ? r.fin.margePrevuePct.toFixed(1) : "", r.fin.margeReellePct != null ? r.fin.margeReellePct.toFixed(1) : "", Math.round(n(r.surface)), r.qualite.reserves, r.qualite.rapports]);
+    });
+    var csv = "﻿" + lignes.map(function (l) { return l.map(function (v) { v = v == null ? "" : String(v); return /[;"\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }).join(";"); }).join("\r\n");
+    X.saveFile(new Blob([csv], { type: "text/csv" }), "Archives_2AM_" + today() + ".csv");
+  }
+  function arcRex() {
+    var p = P(), r = p.rex;
+    var h = '<div class="bar-btn"><button class="btn p" id="rexCalc">' + (r ? "Recalculer le REX" : "Calculer le REX maintenant") + "</button>" + (r ? '<button class="btn" id="rexPdf">Fiche REX (PDF)</button>' : "") + (!p.archive ? '<button class="btn" data-clot="' + p.id + '">Clôturer et archiver</button>' : "") + '<span class="hint">Projet : <b>' + esc(p.info.nom) + "</b>" + (r ? " · REX du " + fr(r.date) : "") + "</span></div>";
+    if (!r) return h + '<div class="card"><p>Le REX compare ce qui était prévu à ce qui s\'est réellement passé : dates, durée de chaque tâche, journées de main-d\'œuvre par métier, consommations de matériaux, prix d\'achat, dépenses et marge, réserves.</p><p class="hint">Il se calcule automatiquement à la clôture du chantier. Plus les rapports terrain et les achats sont complets, plus le REX est précis.</p></div>';
+    var d = r.dates;
+    h += '<div class="kpis">' + X.kpi("Écart sur la date promise", r.ecartDelai == null ? "—" : (r.ecartDelai > 0 ? "+" : "") + r.ecartDelai + " j", "promis " + fr(d.promis) + " · livré " + fr(d.finReelle)) + X.kpi("Durée réelle", r.dureeReelle == null ? "—" : r.dureeReelle + " j", "prévue " + (r.dureePrevue == null ? "—" : r.dureePrevue + " j")) +
+      X.kpi("Marge réelle", r.fin.margeReellePct == null ? "—" : fmt(r.fin.margeReellePct, 1) + " %", "prévue " + fmt(r.fin.margePrevuePct, 1) + " %") + X.kpi("Rapports terrain", r.qualite.rapports, Math.round(100 * r.couverture) + " % des jours de chantier couverts") + "</div>";
+    h += '<div class="card"><h2>Ce qu\'il faut retenir (calculé automatiquement)</h2>' + (r.conclusions.length ? "<ul>" + r.conclusions.map(function (c) { return "<li>" + esc(c) + "</li>"; }).join("") + "</ul>" : '<p class="hint">Pas assez de données pour conclure.</p>') + "</div>";
+    h += '<div class="card"><h2>Vos observations</h2><label class="f wide"><span>Ce qui a bien marché</span>' + inp("rex.notes.positif", { area: true, rows: 2 }) + '</label><label class="f wide"><span>Ce qui a posé problème</span>' + inp("rex.notes.negatif", { area: true, rows: 2 }) + '</label><label class="f wide"><span>À faire autrement la prochaine fois</span>' + inp("rex.notes.actions", { area: true, rows: 2 }) + "</label></div>";
+    h += '<div class="grid2"><div class="card"><h2>Dates</h2><table class="t">' + [["Étude", d.etude], ["Début prévu", d.debutPrevu], ["Début réel", d.debutReel], ["Fin prévue (référence)", d.finPrevue], ["Livraison promise", d.promis], ["Fin réelle / réception", d.finReelle]].map(function (x) { return '<tr><td class="l">' + x[0] + "</td><td>" + fr(x[1]) + "</td></tr>"; }).join("") + "</table></div>" +
+      '<div class="card"><h2>Finances (HT)</h2><table class="t">' + [["Marché", r.fin.marcheHT], ["Facturé", r.fin.factureHT], ["Déboursé sec prévu", r.fin.dsPrevu], ["Dépenses réelles", r.fin.depenses], ["Marge réelle", r.fin.margeReelle], ["Encaissé (TTC)", r.fin.encaisse]].map(function (x) { return '<tr><td class="l">' + x[0] + "</td><td>" + (x[1] == null ? "—" : fmt(x[1])) + "</td></tr>"; }).join("") + "</table></div></div>";
+    if (r.taches.length) h += '<div class="card"><h2>Durée des tâches (jours ouvrés)</h2><table class="t"><tr><th class="l">Tâche</th><th class="l">Métier</th><th>Prévu</th><th>Réel</th><th>Écart</th></tr>' + r.taches.map(function (t) { return '<tr><td class="l">' + esc(t.nom) + '</td><td class="l">' + esc(LIBM[t.metier] || "—") + "</td><td>" + t.prevu + "</td><td>" + t.reel + "</td><td>" + (t.ratio > 1.1 ? badge("rouge", "+" + Math.round(100 * (t.ratio - 1)) + " %") : t.ratio < 0.9 ? badge("vert", Math.round(100 * (t.ratio - 1)) + " %") : "≈") + "</td></tr>"; }).join("") + "</table></div>";
+    if (r.mo.length) h += '<div class="card"><h2>Main-d\'œuvre par métier</h2><table class="t"><tr><th class="l">Métier</th><th>Journées théoriques</th><th>Journées déclarées</th><th>Rapport réel / prévu</th><th class="l">Source</th></tr>' + r.mo.map(function (m) { return '<tr><td class="l">' + esc(m.nom) + "</td><td>" + fmt(m.theo) + "</td><td>" + fmt(m.reel) + "</td><td>" + m.ratio.toFixed(2) + '</td><td class="l">' + esc(m.source) + "</td></tr>"; }).join("") + "</table></div>";
+    if (r.mat.length) h += '<div class="card"><h2>Matériaux</h2><table class="t"><tr><th class="l">Matériau</th><th>Théorique</th><th>Consommé</th><th>Écart</th></tr>' + r.mat.map(function (m) { return '<tr><td class="l">' + esc(m.nom) + "</td><td>" + fmt(m.theo, 2) + " " + esc(m.u) + "</td><td>" + fmt(m.reel, 2) + " " + esc(m.u) + "</td><td>" + (m.ratio > 1 ? "+" : "") + Math.round(100 * (m.ratio - 1)) + " %</td></tr>"; }).join("") + "</table></div>";
+    if (r.prix.length) h += '<div class="card"><h2>Prix d\'achat réels</h2><table class="t"><tr><th class="l">Matériau</th><th>Bibliothèque</th><th>Payé (moyenne)</th><th>Écart</th><th>Achats</th></tr>' + r.prix.map(function (x) { return '<tr><td class="l">' + esc(x.nom) + "</td><td>" + fmt(x.biblio) + "</td><td>" + fmt(x.reel) + "</td><td>" + (x.ratio > 1 ? "+" : "") + Math.round(100 * (x.ratio - 1)) + " %</td><td>" + x.n + "</td></tr>"; }).join("") + "</table></div>";
+    return h;
+  }
+  function arcAppr() {
+    var s = S(), sg = suggestions(), nbRex = s.projects.filter(function (p) { return p.rex; }).length, disp = dispersion();
+    var h = '<div class="kpis">' + X.kpi("REX disponibles", nbRex, "chantiers clôturés") + X.kpi("Suggestions", sg.length, "à valider") + X.kpi("Corrections appliquées", s.appr.journal.length, "depuis le début") + X.kpi("Dispersion des durées", disp.appris ? "± " + Math.round(100 * disp.sigma) + " %" : "par défaut", disp.appris ? "apprise sur " + disp.n + " tâches" : "5 tâches mesurées minimum") + "</div>";
+    h += '<div class="card"><h2>Comment l\'application apprend</h2><p class="hint">À chaque chantier clôturé, le REX mesure l\'écart entre le prévu et le réel. Les corrections proposées sont <b>prudentes</b> : la valeur actuelle compte comme deux chantiers, donc un seul chantier atypique ne bouleverse pas vos prix. Les prix d\'achat apprennent dès le premier achat renseigné (6 derniers achats, ramenés au prix de Dakar). Rien n\'est modifié sans votre accord. Les marchés déjà figés ne changent pas ; les devis non figés et les plannings sont recalculés.</p></div>';
+    h += '<div class="card"><h2>Corrections proposées</h2>' + (sg.length ? '<div class="bar-btn"><button class="btn p" id="apTout">Tout appliquer</button></div><table class="t"><tr><th class="l">Type</th><th class="l">Paramètre</th><th>Actuel</th><th class="l">Observé</th><th>Proposé</th><th class="l">Effet</th><th></th></tr>' + sg.map(function (x, i) {
+      return '<tr><td class="l">' + esc(x.type) + '</td><td class="l">' + esc(x.nom) + ' <span class="hint">' + esc(x.u) + "</span></td><td>" + (x.type === "Productivité" ? x.cur.toFixed(2) : fmt(x.cur)) + '</td><td class="l">' + x.obs.map(function (v) { return x.type === "Productivité" ? v.toFixed(2) : fmt(v); }).join(" · ") + ' <span class="hint">(' + x.obs.length + ")</span></td><td><b>" + (x.type === "Productivité" ? x.prop.toFixed(2) : fmt(x.prop)) + '</b></td><td class="l small">' + esc(x.effet) + '</td><td><button class="btn sm p" data-ap="' + i + '">Appliquer</button> <button class="btn sm" data-ign="' + i + '">Ignorer</button></td></tr>';
+    }).join("") + "</table>" : '<p class="hint">Aucune correction à proposer pour le moment. ' + (nbRex ? "Vos paramètres sont cohérents avec vos chantiers." : "Clôturez vos premiers chantiers (avec rapports terrain et achats) pour démarrer l'apprentissage.") + "</p>") + "</div>";
+    if (s.appr.journal.length) h += '<div class="card"><h2>Journal des corrections</h2><table class="t"><tr><th>Date</th><th class="l">Paramètre</th><th>Avant</th><th>Après</th><th>Chantiers / achats</th><th></th></tr>' + s.appr.journal.map(function (j, i) { return "<tr><td>" + fr(j.date) + '</td><td class="l">' + esc(j.nom) + "</td><td>" + fmt(j.avant, j.avant < 10 ? 2 : 0) + "</td><td>" + fmt(j.apres, j.apres < 10 ? 2 : 0) + "</td><td>" + j.n + '</td><td><button class="btn sm" data-annul="' + i + '">Annuler</button></td></tr>'; }).join("") + "</table></div>";
+    var pr = s.ent.productivite, ks = Object.keys(pr).filter(function (k) { return pr[k] !== 1; });
+    if (ks.length) h += '<div class="card"><h2>Cadences apprises en vigueur</h2><p>' + ks.map(function (k) { return esc(LIBM[k] || k) + " : × " + n(pr[k]).toFixed(2); }).join(" · ") + '</p><p class="hint">× 1,20 = ce métier met 20 % de temps de plus que la cadence théorique sur vos chantiers.</p></div>';
+    return h;
+  }
+  function postArchives() {
+    X.bindTabs("archives"); X.linkGo();
+    var s = S(), b;
+    document.querySelectorAll("[data-af]").forEach(function (el) { el.onchange = function () { filtres()[el.dataset.af] = el.value; X.renderPage(); }; });
+    document.querySelectorAll("[data-clot]").forEach(function (bt) { bt.onclick = function () {
+      if (bt.dataset.c !== "1") { bt.dataset.c = "1"; bt.textContent = "Confirmer la clôture"; return; }
+      var p = s.projects.filter(function (x) { return x.id === bt.dataset.clot; })[0]; cloturer(p);
+      if (s.active === p.id) { var autre = s.projects.filter(function (x) { return !x.archive; })[0]; if (!autre) { autre = D.projetVide(); s.projects.push(autre); X.setStateRaw(s); s = S(); } s.active = autre.id; }
+      X.save(); X.renderTop(); X.ui.sub.archives = "base"; X.renderPage(); X.toast("Chantier clôturé : REX calculé et archivé");
+    }; });
+    document.querySelectorAll("[data-arex]").forEach(function (bt) { bt.onclick = function () { s.active = bt.dataset.arex; X.save(); X.renderTop(); X.ui.sub.archives = "rex"; X.renderPage(); }; });
+    document.querySelectorAll("[data-aouv]").forEach(function (bt) { bt.onclick = function () { s.active = bt.dataset.aouv; X.save(); X.renderTop(); X.go("dash"); X.toast("Projet archivé ouvert en consultation : vous pouvez regénérer tous ses documents"); }; });
+    document.querySelectorAll("[data-arouv]").forEach(function (bt) { bt.onclick = function () { var p = s.projects.filter(function (x) { return x.id === bt.dataset.arouv; })[0]; p.archive = false; X.save(); X.renderTop(); X.renderPage(); X.toast("Projet sorti des archives (son REX est conservé)"); }; });
+    if ((b = $("csvArc"))) b.onclick = csvArchives;
+    if ((b = $("rexCalc"))) b.onclick = function () { var p = P(); p.rex = calculerREX(p); X.save(); X.renderPage(); X.toast("REX calculé"); };
+    if ((b = $("rexPdf"))) b.onclick = pdfREX;
+    var sg = suggestions();
+    document.querySelectorAll("[data-ap]").forEach(function (bt) { bt.onclick = function () { appliquer(sg[+bt.dataset.ap]); X.save(); X.renderPage(); X.toast("Correction appliquée"); }; });
+    document.querySelectorAll("[data-ign]").forEach(function (bt) { bt.onclick = function () { var x = sg[+bt.dataset.ign]; s.appr.ignore[x.cle + "=" + x.prop] = 1; X.save(); X.renderPage(); }; });
+    if ((b = $("apTout"))) b.onclick = function () { sg.forEach(appliquer); X.save(); X.renderPage(); X.toast(sg.length + " correction(s) appliquée(s)"); };
+    document.querySelectorAll("[data-annul]").forEach(function (bt) { bt.onclick = function () { annuler(+bt.dataset.annul); X.save(); X.renderPage(); X.toast("Correction annulée"); }; });
+  }
+  function pdfREX() {
+    var h = APP._pdf().h, p = P(), r = p.rex, doc = h.doc0(), titre = "RETOUR D'EXPÉRIENCE (REX)", sous = "Établi le " + fr(r.date);
+    h.header(doc, titre, sous); var y = h.blocProjet(doc, 35, typeDe(p)), d = r.dates;
+    y = h.table(doc, { startY: y, theme: "plain", body: [["Début prévu / réel", fr(d.debutPrevu) + " / " + fr(d.debutReel)], ["Livraison promise / réelle", fr(d.promis) + " / " + fr(d.finReelle)], ["Écart sur la date promise", r.ecartDelai == null ? "-" : r.ecartDelai + " jours"], ["Marché HT / dépenses réelles", fmt(r.fin.marcheHT) + " / " + fmt(r.fin.depenses) + " FCFA"], ["Marge prévue / réelle", fmt(r.fin.margePrevuePct, 1) + " % / " + (r.fin.margeReellePct == null ? "-" : fmt(r.fin.margeReellePct, 1) + " %")], ["Réserves à la réception", r.qualite.reserves + ""]].map(function (x) { return [h.t(x[0]), h.t(x[1])]; }), columnStyles: { 0: { fontStyle: "bold", cellWidth: 70 } } }, titre, sous) + 4;
+    function bloc(t, txt) { if (!txt) return; if (y > 250) { doc.addPage(); h.header(doc, titre, sous); y = 40; } doc.setFont("helvetica", "bold"); doc.setFontSize(10); doc.text(h.t(t), 14, y); doc.setFont("helvetica", "normal"); doc.setFontSize(9); var l = doc.splitTextToSize(h.t(txt), 182); doc.text(l, 14, y + 5); y += l.length * 4.3 + 9; }
+    bloc("Ce qu'il faut retenir", r.conclusions.map(function (c) { return "- " + c; }).join("\n"));
+    bloc("Ce qui a bien marché", r.notes.positif); bloc("Ce qui a posé problème", r.notes.negatif); bloc("À faire autrement la prochaine fois", r.notes.actions);
+    if (r.taches.length) y = h.table(doc, { startY: y, head: [["Tâche", "Prévu (j)", "Réel (j)", "Écart"]], body: r.taches.map(function (t) { return [h.t(t.nom), t.prevu, t.reel, Math.round(100 * (t.ratio - 1)) + " %"]; }), columnStyles: { 0: { cellWidth: 110 } } }, titre, sous) + 5;
+    if (r.mat.length) y = h.table(doc, { startY: y, head: [["Matériau", "Théorique", "Consommé", "Écart"]], body: r.mat.map(function (m) { return [h.t(m.nom), h.t(fmt(m.theo, 2) + " " + m.u), h.t(fmt(m.reel, 2) + " " + m.u), Math.round(100 * (m.ratio - 1)) + " %"]; }), columnStyles: { 0: { cellWidth: 90 } } }, titre, sous) + 5;
+    h.footers(doc, "REX"); X.saveFile(doc.output("blob"), "REX_" + X.slug(p.info.nom) + ".pdf");
+  }
+
+  /* ---------------- Démarrage ---------------- */
+  document.addEventListener("click", function (e) {
+    var id = e.target && e.target.id;
+    if (id === "bkChoisir") choisirDossier();
+    if (id === "bkActiver") reactiver();
+  });
+  APP.reg("archives", pageArchives, postArchives);
+  setTimeout(initSauvegarde, 0);
+
+  return { apresEnregistrement: apresEnregistrement, sauvegardeHTML: sauvegardeHTML, postSauvegarde: postSauvegarde, dashHTML: dashHTML, importer: importer, exporter: exporter,
+    envoyer: envoyer, partagerFichier: partagerFichier, messageFacture: messageFacture, numeroWA: numeroWA,
+    calculerREX: calculerREX, cloturer: cloturer, suggestions: suggestions, appliquer: appliquer, annuler: annuler, dispersion: dispersion,
+    simuler: simuler, risqueHTML: risqueHTML, fournisseursHTML: fournisseursHTML, _bk: BK };
 })();
 </script>
 </body>
