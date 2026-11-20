@@ -223,11 +223,12 @@ var MOD = (function () {
     return s + '<div class="legend"><i class="lg prevu"></i>avancement prévu (référence) <i class="lg reel"></i>avancement réel (rapports terrain)</div>';
   }
   function opcAv() {
+    var partage = window.SYNC ? SYNC.partageHTML(P()) : "";
     var p = P(), r = F(p), T = r.F.taches, spi = r.F.valeurPrevue ? r.F.valeurAcquise / r.F.valeurPrevue : null;
     var dep = depensesReelles(p), dsAcq = T.reduce(function (s, t) { return s + t.ds * t.pct / 100; }, 0), cpi = dep > 0 ? dsAcq / dep : null;
     var h = '<div class="kpis">' + X.kpi("Avancement réel", Math.round(r.F.avancement) + " %", "prévu à cette date : " + Math.round(r.F.avancementPrevu) + " %") + X.kpi("Indice délai (SPI)", spi == null ? "—" : spi.toFixed(2), spi == null ? "" : spi >= 0.98 ? "dans les temps" : "en retard : " + Math.round((1 - spi) * 100) + " % du travail prévu non fait") +
       X.kpi("Indice coût (CPI)", cpi == null ? "—" : cpi.toFixed(2), cpi == null ? "saisir les dépenses (Facturation)" : cpi >= 1 ? "dépenses maîtrisées" : "dépenses supérieures au prévu") + X.kpi("Fin prévue", fr(r.F.fin), "référence : " + fr(r.F.refFin)) + "</div>";
-    h += '<div class="bar-btn"><button class="btn p" id="pdfClient">Rapport d\'avancement pour le client (PDF)</button><button class="btn" id="pdfGantt2">Planning recalé (PDF)</button></div>';
+    h += partage + '<div class="bar-btn"><button class="btn p" id="pdfClient">Rapport d\'avancement pour le client (PDF)</button><button class="btn" id="pdfGantt2">Planning recalé (PDF)</button></div>';
     h += '<div class="card"><h2>Courbe en S</h2>' + courbeS(r) + "</div>";
     h += '<div class="card"><h2>Avancement par tâche</h2><table class="t edit"><tr><th class="l">Tâche</th><th>Prévu à date</th><th>Terrain</th><th>Validé OPC</th><th>Écart</th><th>Début</th><th>Fin prévue</th><th>Retard</th></tr>';
     T.forEach(function (t) {
@@ -239,7 +240,7 @@ var MOD = (function () {
   function postAv() {
     var p = P();
     document.querySelectorAll("[data-val]").forEach(function (el) { el.onchange = function () { if (el.value === "") delete p.opc.avValide[el.dataset.val]; else p.opc.avValide[el.dataset.val] = { pct: Math.max(0, Math.min(100, +el.value)), date: jour() }; X.save(); X.renderPage(); }; });
-    $("pdfClient").onclick = pdfClient; $("pdfGantt2").onclick = function () { pdfGantt(true); };
+    $("pdfClient").onclick = pdfClient; if (window.SYNC) SYNC.postPartage(); $("pdfGantt2").onclick = function () { pdfGantt(true); };
   }
   function opcGlis() {
     var p = P(), r = F(p), j = jour(), j21 = PL.addDays(j, 21);
@@ -382,7 +383,7 @@ var MOD = (function () {
     function enregistrer() {
       var rap = JSON.parse(JSON.stringify(b)); rap.auteur = S().terrain.moi || ""; rap.enregistre = new Date().toISOString();
       p.suivi.rapports = p.suivi.rapports.filter(function (r) { return r.id !== rap.id; }); p.suivi.rapports.push(rap);
-      delete S().terrain.brouillons[p.id]; X.save(); return rap;
+      delete S().terrain.brouillons[p.id]; X.save(); if (window.SYNC) SYNC.rapportEnregistre(p, rap); return rap;
     }
     $("saveRap").onclick = function () { enregistrer(); X.toast("Rapport enregistré"); X.ui.sub.terrain = "hist"; X.renderPage(); };
     $("sendRap").onclick = function () { var rap = enregistrer(); envoyerRapport(p, rap); X.ui.sub.terrain = "hist"; X.renderPage(); };

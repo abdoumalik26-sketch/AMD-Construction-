@@ -14,6 +14,8 @@ parts = {
     "/*MODULES*/": rd("src/modules.js"),
     "/*TYPES*/": rd("src/types.js"),
     "/*PILOTAGE*/": rd("src/pilotage.js"),
+    "/*SUPABASE*/": rd("vendor/sb/package/dist/umd/supabase.js"),
+    "/*SYNC*/": rd("src/sync.js"),
 }
 for k, v in parts.items():
     html = html.replace(k, v.replace("</script>", "<\\/script>"), 1)

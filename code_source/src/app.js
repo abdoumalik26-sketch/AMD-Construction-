@@ -2,7 +2,7 @@
    PILOTE BTP — interface
    ============================================================ */
 var APP = (function () {
-  var D = DATA, C = CALC, KEY = "piloteBTP_v1", VERSION = "2026.11.20-d";
+  var D = DATA, C = CALC, KEY = "piloteBTP_v1", VERSION = "2026.11.20-e";
   var S, ui = { page: "dash", sub: { metres: "fond", prix: "dqe" }, niv: 0, ouv: null, phase: "Toutes", ouvEdit: "3.4" };
   var $ = function (id) { return document.getElementById(id); };
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
@@ -28,6 +28,7 @@ var APP = (function () {
     s.ent.productivite = s.ent.productivite || {};
     s.appr = s.appr || { journal: [], ignore: {} }; s.appr.journal = s.appr.journal || []; s.appr.ignore = s.appr.ignore || {};
     s.sauvegarde = s.sauvegarde || {};
+    s.sync = s.sync || {}; s.sync.hash = s.sync.hash || {}; s.sync.remoteAt = s.sync.remoteAt || {}; s.sync.supprimes = s.sync.supprimes || []; s.sync.file = s.sync.file || [];
     s.terrain = s.terrain || { moi: "" };
     s.projects.forEach(function (p) {
       p.overrides = p.overrides || {}; p.devis = p.devis || {}; p.opt = Object.assign({}, D.exemple().opt, p.opt || {});
@@ -85,6 +86,7 @@ var APP = (function () {
         if (!ok) { try { localStorage.setItem(KEY, txt); ok = true; } catch (e) {} }
         $("saveState").textContent = ok ? "Enregistré · " + heure : "⚠ Enregistrement impossible : exportez une sauvegarde";
         if (ok && window.PIL) PIL.apresEnregistrement();
+        if (ok && window.SYNC) SYNC.apresEnregistrement();
       });
     }, 200);
   }
@@ -130,10 +132,12 @@ var APP = (function () {
     ["planning", "Planning", "▭"], ["opc", "OPC et anticipation", "◎"], ["terrain", "Suivi terrain", "⚑"],
     ["appro", "Approvisionnements", "⛟"], ["factu", "Facturation et trésorerie", "≡"], ["memoires", "Mémoires techniques", "✎"], ["archives", "Archives, REX et apprentissage", "▣"], ["params", "Paramètres", "⚙"]
   ];
+  function menuVisible() { return (window.SYNC && SYNC.estCollab()) ? MENU.filter(function (m) { return m[0] === "terrain" || m[0] === "planning" || m[0] === "params"; }) : MENU; }
   function renderMenu() {
-    $("menu").innerHTML = MENU.map(function (m) { return '<button data-p="' + m[0] + '" class="' + (ui.page === m[0] ? "on" : "") + '"><span class="ic">' + m[2] + "</span>" + m[1] + (m[3] ? '<em>' + m[3] + "</em>" : "") + "</button>"; }).join("");
+    if (window.SYNC && SYNC.estCollab() && ["terrain", "planning", "params"].indexOf(ui.page) < 0) ui.page = "terrain";
+    $("menu").innerHTML = menuVisible().map(function (m) { return '<button data-p="' + m[0] + '" class="' + (ui.page === m[0] ? "on" : "") + '"><span class="ic">' + m[2] + "</span>" + m[1] + (m[3] ? '<em>' + m[3] + "</em>" : "") + "</button>"; }).join("");
     $("menu").querySelectorAll("button").forEach(function (b) { b.onclick = function () { go(b.dataset.p); }; });
-    $("menuSel").innerHTML = MENU.map(function (m) { return '<option value="' + m[0] + '"' + (ui.page === m[0] ? " selected" : "") + ">" + m[1] + "</option>"; }).join("");
+    $("menuSel").innerHTML = menuVisible().map(function (m) { return '<option value="' + m[0] + '"' + (ui.page === m[0] ? " selected" : "") + ">" + m[1] + "</option>"; }).join("");
   }
   function renderTop() {
     var br = $("brandName"); if (br) br.textContent = S.ent.nom || "Pilote BTP";
@@ -221,6 +225,7 @@ var APP = (function () {
     $("delP").onclick = function () {
       var b = $("delP");
       if (b.dataset.c !== "1") { b.dataset.c = "1"; b.textContent = "Confirmer la suppression de « " + P().info.nom + " »"; return; }
+      S.sync = S.sync || {}; S.sync.supprimes = (S.sync.supprimes || []).concat([S.active]);
       S.projects = S.projects.filter(function (x) { return x.id !== S.active; });
       if (!S.projects.length) S.projects.push(D.projetVide());
       S.active = S.projects[0].id; save(); renderTop(); renderPage(); toast("Projet supprimé");
@@ -509,7 +514,8 @@ var APP = (function () {
   /* ---- Paramètres ---- */
   PAGES.params = function () {
     var e = { root: "ent" };
-    var h = '<div class="head"><h1>Paramètres</h1><p>Identité de l\'entreprise (en-tête des PDF), coefficients de prix et sauvegardes.</p></div>';
+    var h = '<div class="head"><h1>Paramètres</h1><p>Identité de l\'entreprise (en-tête des PDF), coefficients de prix, synchronisation et sauvegardes.</p></div>';
+    if (window.SYNC && SYNC.estCollab()) return h + SYNC.paramsHTML();
     h += '<div class="card"><h2>Entreprise</h2><div class="form">' + fld("Raison sociale", "nom", { root: "ent", text: true }) + fld("Activité / slogan", "slogan", { root: "ent", text: true }) +
       fld("Adresse", "adresse", { root: "ent", text: true }) + fld("Téléphone", "tel", { root: "ent", text: true }) + fld("E-mail", "email", { root: "ent", text: true }) +
       fld("NINEA", "ninea", { root: "ent", text: true }) + fld("RCCM", "rccm", { root: "ent", text: true }) +
@@ -528,11 +534,12 @@ var APP = (function () {
     h += '<div class="card"><h2>Effectif disponible de l\'entreprise (tous chantiers)</h2><div class="form">' + Object.keys(PLAN.CAPACITE).map(function (k) { return fld(PLAN.LIB[k].charAt(0).toUpperCase() + PLAN.LIB[k].slice(1), "capacite." + k, e); }).join("") +
       '</div><p class="hint">Le moteur d\'anticipation compare ces effectifs aux besoins de tous les chantiers en cours, jour par jour, et vous prévient des surcharges.</p></div>';
     h += '<div class="card"><h2>Version de l\'application</h2><p>' + VERSION + (location.protocol === "file:" ? ' — <b>fichier local</b> : il ne se met pas à jour tout seul. Utilisez l\'adresse en ligne de l\'application pour recevoir les mises à jour automatiquement.' : " — mises à jour automatiques activées (dès qu'il y a internet).") + "</p></div>";
-    h += window.PIL ? PIL.sauvegardeHTML() : "";
+    h += (window.SYNC ? SYNC.paramsHTML() : "") + (window.PIL ? PIL.sauvegardeHTML() : "");
     return h;
   };
   function updateK() { var e = $("kVal"); if (e) e.textContent = C.K(S.ent).toFixed(3); }
   POST.params = function () {
+    if (window.SYNC && SYNC.estCollab()) return SYNC.postParams();
     updateK();
     document.querySelectorAll("[data-cb]").forEach(function (el) { el.onchange = function () { var x = el.dataset.cb.split("|"); S.collab[+x[0]][x[1]] = el.value; save(); }; });
     document.querySelectorAll("[data-cbdel]").forEach(function (b) { b.onclick = function () { S.collab.splice(+b.dataset.cbdel, 1); save(); renderPage(); }; });
@@ -550,6 +557,7 @@ var APP = (function () {
     };
     var ld = $("logoDel"); if (ld) ld.onclick = function () { S.ent.logo = ""; S.ent.logoRetire = true; save(); renderPage(); };
     if (window.PIL) PIL.postSauvegarde();
+    if (window.SYNC) SYNC.postParams();
     $("rstAll").onclick = function () { var b = $("rstAll"); if (b.dataset.c !== "1") { b.dataset.c = "1"; b.textContent = "Confirmer : tout effacer"; return; } S = migrate(defState()); save(); renderTop(); renderPage(); toast("Application réinitialisée"); };
   };
 
@@ -737,7 +745,8 @@ var APP = (function () {
 
   /* ---------------- Démarrage ---------------- */
   function init() {
-    load().then(function (s) { S = s; start(); });
+    if (/^#suivi=/.test(location.hash) && window.SYNC) return SYNC.pageClient(location.hash.slice(7));
+    load().then(function (s) { S = s; start(); if (window.SYNC) SYNC.init(); });
   }
   function start() {
     var h = (location.hash || "").slice(1); if (MENU.some(function (m) { return m[0] === h; })) ui.page = h;
