@@ -2,7 +2,7 @@
    PILOTE BTP — interface
    ============================================================ */
 var APP = (function () {
-  var D = DATA, C = CALC, KEY = "piloteBTP_v1", VERSION = "2026.11.20-f";
+  var D = DATA, C = CALC, KEY = "piloteBTP_v1", VERSION = "2026.11.20-g";
   var S, ui = { page: "dash", sub: { metres: "fond", prix: "dqe" }, niv: 0, ouv: null, phase: "Toutes", ouvEdit: "3.4" };
   var $ = function (id) { return document.getElementById(id); };
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
@@ -760,7 +760,7 @@ var APP = (function () {
   function start() {
     var h = (location.hash || "").slice(1); if (MENU.some(function (m) { return m[0] === h; })) ui.page = h;
     renderMenu(); renderTop(); renderPage(); save();
-    var vv = $("verApp"); if (vv) vv.textContent = "Version " + VERSION + (location.protocol === "file:" ? " · fichier local" : "");
+    var vv = $("verApp"); if (vv) vv.textContent = "TABAX · version " + VERSION + (location.protocol === "file:" ? " · fichier local" : "");
     try { if (sessionStorage.getItem("majFaite")) { sessionStorage.removeItem("majFaite"); toast("Application mise à jour : version " + VERSION); } } catch (e) {}
     if ((location.protocol === "https:" || location.hostname === "localhost") && !/claudeusercontent|claude\.ai/.test(location.hostname)) {
       try {
