@@ -2,7 +2,7 @@
    PILOTE BTP — interface
    ============================================================ */
 var APP = (function () {
-  var D = DATA, C = CALC, KEY = "piloteBTP_v1", VERSION = "2026.11.20-g";
+  var D = DATA, C = CALC, KEY = "piloteBTP_v1", VERSION = "2026.11.20-h";
   var S, ui = { page: "dash", sub: { metres: "fond", prix: "dqe" }, niv: 0, ouv: null, phase: "Toutes", ouvEdit: "3.4" };
   var $ = function (id) { return document.getElementById(id); };
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
@@ -134,7 +134,7 @@ var APP = (function () {
   var MENU = [
     ["dash", "Tableau de bord", "▦"], ["projets", "Projets", "▤"], ["metres", "Métrés / devis rapide", "⊞"], ["prix", "Études de prix", "₣"],
     ["planning", "Planning", "▭"], ["opc", "OPC et anticipation", "◎"], ["terrain", "Suivi terrain", "⚑"], ["qhse", "Sécurité (QHSE)", "⛑"],
-    ["appro", "Approvisionnements", "⛟"], ["factu", "Facturation et trésorerie", "≡"], ["memoires", "Mémoires techniques", "✎"], ["archives", "Archives, REX et apprentissage", "▣"], ["params", "Paramètres", "⚙"]
+    ["appro", "Approvisionnements", "⛟"], ["factu", "Finances et comptabilité", "≡"], ["memoires", "Mémoires techniques", "✎"], ["archives", "Archives, REX et apprentissage", "▣"], ["params", "Paramètres", "⚙"]
   ];
   function menuVisible() { return (window.SYNC && SYNC.estCollab()) ? MENU.filter(function (m) { return ["terrain", "qhse", "planning", "params"].indexOf(m[0]) >= 0; }) : MENU; }
   function renderMenu() {
@@ -172,6 +172,7 @@ var APP = (function () {
     var maxPh = Math.max.apply(null, q.phases.map(function (x) { return x.total; }).concat([1]));
     var h = '<div class="head"><h1>Tableau de bord</h1><p>Projet actif : <b>' + esc(p.info.nom) + "</b> · " + esc(p.info.client || "client non renseigné") + " · " + esc(p.info.ville || p.info.region) + "</p></div>";
     if (window.PIL) h += PIL.dashHTML();
+    if (window.COMPTA) h += COMPTA.alertesHTML();
     if (window.OUT) h += OUT.entrepriseHTML();
     if (S.demo) h += '<div class="note">Le projet « Villa R+1 – exemple » est <b>fictif</b>, avec des prix <b>indicatifs</b>. Créez votre projet dans <a href="#" data-go="projets">Projets</a> et mettez vos prix réels dans <a href="#" data-go="prix:biblio">Études de prix › Bibliothèque</a>.</div>';
     h += '<div class="kpis">' + kpi("Montant TTC", fmt(q.ttc), "FCFA · HT " + fmt(q.ht)) + kpi("Coût au m²", fmt(q.surface ? q.ttc / q.surface : 0), "FCFA TTC / m² de plancher (" + fmt(q.surface) + " m²)") +
@@ -541,7 +542,7 @@ var APP = (function () {
     h += '<div class="card"><h2>Effectif disponible de l\'entreprise (tous chantiers)</h2><div class="form">' + Object.keys(PLAN.CAPACITE).map(function (k) { return fld(PLAN.LIB[k].charAt(0).toUpperCase() + PLAN.LIB[k].slice(1), "capacite." + k, e); }).join("") +
       '</div><p class="hint">Le moteur d\'anticipation compare ces effectifs aux besoins de tous les chantiers en cours, jour par jour, et vous prévient des surcharges.</p></div>';
     h += '<div class="card"><h2>Version de l\'application</h2><p>' + VERSION + (location.protocol === "file:" ? ' — <b>fichier local</b> : il ne se met pas à jour tout seul. Utilisez l\'adresse en ligne de l\'application pour recevoir les mises à jour automatiquement.' : " — mises à jour automatiques activées (dès qu'il y a internet).") + "</p></div>";
-    h += (window.OUT ? OUT.entrepriseSigHTML() : "") + (window.SYNC ? SYNC.paramsHTML() : "") + (window.PIL ? PIL.sauvegardeHTML() : "");
+    h += (window.COMPTA ? COMPTA.regimeHTML() : "") + (window.OUT ? OUT.entrepriseSigHTML() : "") + (window.SYNC ? SYNC.paramsHTML() : "") + (window.PIL ? PIL.sauvegardeHTML() : "");
     return h;
   };
   function updateK() { var e = $("kVal"); if (e) e.textContent = C.K(S.ent).toFixed(3); }
@@ -566,6 +567,7 @@ var APP = (function () {
     if (window.PIL) PIL.postSauvegarde();
     if (window.SYNC) SYNC.postParams();
     if (window.OUT) OUT.postEntrepriseSig();
+    if (window.COMPTA) COMPTA.postRegime();
     $("rstAll").onclick = function () { var b = $("rstAll"); if (b.dataset.c !== "1") { b.dataset.c = "1"; b.textContent = "Confirmer : tout effacer"; return; } S = migrate(defState()); save(); renderTop(); renderPage(); toast("Application réinitialisée"); };
   };
 
@@ -722,7 +724,7 @@ var APP = (function () {
         doc.setFont("helvetica", "bold"); doc.setFontSize(9.5); doc.text("Échéancier de paiement", 14, y + 2);
         y = table(doc, { startY: y + 4, head: [["Échéance", "%", "Montant TTC"]], body: echeancier(q).map(function (r) { return [t(r[0]), f(100 * r[1] / q.ttc, 1) + " %", f(r[1])]; }), columnStyles: { 0: { cellWidth: 120 }, 1: { cellWidth: 22, halign: "right" }, 2: { cellWidth: 40, halign: "right" } } }, titre, sous) + 6;
       }
-      var cond = doc.splitTextToSize(t("Conditions : " + (dv.conditions || (p.mode === "rapide" ? "Prix fermes pendant la durée de validité du devis. Paiement : acompte à la commande, solde à la réception des travaux. Les travaux non prévus au présent devis feront l'objet d'un devis complémentaire." : S.ent.conditions))), 182);
+      var cond = doc.splitTextToSize(t((window.COMPTA && COMPTA.mentionTVA() ? COMPTA.mentionTVA() + " " : "") + "Conditions : " + (dv.conditions || (p.mode === "rapide" ? "Prix fermes pendant la durée de validité du devis. Paiement : acompte à la commande, solde à la réception des travaux. Les travaux non prévus au présent devis feront l'objet d'un devis complémentaire." : S.ent.conditions))), 182);
       if (y + cond.length * 4 + 40 > 280) { doc.addPage(); header(doc, titre, sous); y = 38; }
       doc.setFont("helvetica", "normal"); doc.setFontSize(8.5); doc.text(cond, 14, y); y += cond.length * 4 + 8;
       doc.setFont("helvetica", "bold"); doc.text(t("Pour " + S.ent.nom), 16, y); doc.text("Bon pour accord, le client", 113, y);

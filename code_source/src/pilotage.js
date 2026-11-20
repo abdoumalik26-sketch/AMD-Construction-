@@ -344,7 +344,7 @@ var PIL = (function () {
     });
     var ks = Object.keys(parMat);
     var h = '<div class="card"><h2>Comparateur de fournisseurs (tous chantiers)</h2>';
-    if (!ks.length) return h + '<p class="hint">Aucun achat renseigné avec matériau et quantité. Dans Facturation › Dépenses du chantier, indiquez pour chaque achat le matériau et la quantité : les prix réels de chaque fournisseur apparaîtront ici.</p></div>';
+    if (!ks.length) return h + '<p class="hint">Aucun achat renseigné avec matériau et quantité. Dans Finances et comptabilité › Dépenses du chantier, indiquez pour chaque achat le matériau et la quantité : les prix réels de chaque fournisseur apparaîtront ici.</p></div>';
     ks.forEach(function (k) {
       var r = s.res.filter(function (x) { return x[0] === k; })[0], m = parMat[k], fs = Object.keys(m).sort(function (a, b) { return moy(m[a].pu) - moy(m[b].pu); });
       h += "<h3 style=\"margin:12px 0 4px\">" + esc(r ? r[1] : k) + ' <span class="hint">(bibliothèque : ' + fmt(r ? r[3] : 0) + " FCFA/" + esc(r ? r[2] : "") + ' à Dakar)</span></h3><table class="t"><tr><th class="l">Fournisseur</th><th>Achats</th><th>P.U. moyen</th><th>Dernier P.U.</th><th>Délai moyen</th><th>Montant total</th></tr>' +

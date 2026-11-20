@@ -310,7 +310,7 @@ var PLAN = (function () {
     var dl = n((ent || {}).delaiPaiement) || 30;
     (((p.factu || {}).docs) || []).forEach(function (d) {
       var du = d.type === "situation" ? n(d.net) : n(d.ttc), paye = (d.paiements || []).reduce(function (s, x) { return s + n(x.mt); }, 0), ech = addDays(d.date, dl);
-      if (du - paye > 1 && ech < jour) { var j = diff(ech, jour); add(j > 15 ? "rouge" : "orange", p, "Paiement", "Facture " + d.num + " : " + Math.round(du - paye).toLocaleString("fr-FR") + " FCFA impayés, échue depuis " + j + " jours (le " + fr(ech) + "). Relancez le client (Facturation › Relancer).", ech); }
+      if (du - paye > 1 && ech < jour) { var j = diff(ech, jour); add(j > 15 ? "rouge" : "orange", p, "Paiement", "Facture " + d.num + " : " + Math.round(du - paye).toLocaleString("fr-FR") + " FCFA impayés, échue depuis " + j + " jours (le " + fr(ech) + "). Relancez le client (Finances et comptabilité › Relancer).", ech); }
     });
   }
   // Dépenses réelles par lot vs déboursé prévu à l'avancement

@@ -17,6 +17,7 @@ parts = {
     "/*SECURITE*/": rd("src/securite.js"),
     "/*XLSX*/": rd("vendor/xlsx/package/dist/xlsx.mini.min.js"),
     "/*OUTILS*/": rd("src/outils.js"),
+    "/*COMPTA*/": rd("src/compta.js"),
     "/*SUPABASE*/": rd("vendor/sb/package/dist/umd/supabase.js"),
     "/*SYNC*/": rd("src/sync.js"),
 }

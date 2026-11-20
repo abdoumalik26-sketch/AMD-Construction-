@@ -454,9 +454,11 @@ var MOD = (function () {
     return caisse + p.factu.achats.reduce(function (s, a) { return s + (+a.mt || 0); }, 0);
   }
   function pageFactu() {
-    var h = '<div class="head"><h1>Facturation et trésorerie</h1><p>Facture d\'acompte, situations de travaux cumulées (avec remboursement de l\'acompte et retenue de garantie), décompte final, encaissements, dépenses et trésorerie prévisionnelle.</p></div>';
-    h += (X.ui.sub.factu = X.ui.sub.factu || "docs", "") + X.tabs("factu", [["docs", "Factures"], ["sit", "Nouvelle situation"], ["dep", "Dépenses du chantier"], ["treso", "Trésorerie prévisionnelle"]]);
+    var h = '<div class="head"><h1>Finances et comptabilité</h1><p>Factures, situations de travaux, encaissements et dépenses du chantier, puis la comptabilité simplifiée de l\'entreprise : journal de caisse, frais généraux, TVA et résultat de l\'année expliqué simplement.</p></div>';
+    var onglets = [["docs", "Factures"], ["sit", "Nouvelle situation"], ["dep", "Dépenses du chantier"], ["treso", "Trésorerie prévisionnelle"]].concat(window.COMPTA ? COMPTA.TABS : []);
+    h += (X.ui.sub.factu = X.ui.sub.factu || "docs", "") + X.tabs("factu", onglets);
     var sub = X.ui.sub.factu || "docs";
+    if (window.COMPTA && COMPTA.TABS.some(function (t) { return t[0] === sub; })) return h + COMPTA.page(sub);
     return h + ({ docs: facDocs, sit: facSit, dep: facDep, treso: facTreso }[sub] || facDocs)();
   }
   function facDocs() {
@@ -526,6 +528,7 @@ var MOD = (function () {
   function postFactu() {
     if (!X.ui.sub.factu) X.ui.sub.factu = "docs";
     X.bindTabs("factu");
+    if (window.COMPTA && COMPTA.TABS.some(function (t) { return t[0] === X.ui.sub.factu; })) return COMPTA.post(X.ui.sub.factu);
     var p = P(), e = S().ent;
     var b;
     if ((b = $("figM"))) b.onclick = function () { figerMarche(p); X.save(); X.renderPage(); X.toast("Marché figé"); };
@@ -734,7 +737,9 @@ var MOD = (function () {
     doc.autoTable({ startY: y, margin: { left: 96, right: 14, top: 36 }, theme: "plain", body: rows.map(function (x) { return [h.t(x[0]), h.f(x[1]) + " FCFA"]; }), styles: { fontSize: 9, cellPadding: 1.6 }, columnStyles: { 1: { halign: "right", fontStyle: "bold" } }, didParseCell: function (c) { if (c.row.index === rows.length - 1) { c.cell.styles.fillColor = h.VERT; c.cell.styles.textColor = 255; c.cell.styles.fontStyle = "bold"; } } });
     y = doc.lastAutoTable.finalY + 6;
     doc.setFont("helvetica", "italic"); doc.setFontSize(8.5); var tx = doc.splitTextToSize(h.t("Arrêtée la présente facture à la somme de : " + Cc.enLettres(aPayer(d)) + " francs CFA."), 182); doc.text(tx, 14, y); y += tx.length * 4 + 4;
-    doc.setFont("helvetica", "normal"); var cond = doc.splitTextToSize(h.t((e.paiementInfo || "") + " Paiement à " + (e.delaiPaiement || 30) + " jours. " + [e.ninea ? "NINEA " + e.ninea : "", e.rccm ? "RCCM " + e.rccm : ""].filter(Boolean).join(" · ")), 182); doc.text(cond, 14, y); y += cond.length * 4 + 6;
+    doc.setFont("helvetica", "normal"); var cond = doc.splitTextToSize(h.t((e.paiementInfo || "") + " Paiement à " + (e.delaiPaiement || 30) + " jours. " + [e.ninea ? "NINEA " + e.ninea : "", e.rccm ? "RCCM " + e.rccm : ""].filter(Boolean).join(" · ")), 182); doc.text(cond, 14, y); y += cond.length * 4 + 2;
+    if (window.COMPTA && COMPTA.mentionTVA()) { doc.setFont("helvetica", "bold"); doc.text(h.t(COMPTA.mentionTVA()), 14, y + 3); doc.setFont("helvetica", "normal"); y += 6; }
+    y += 4;
     if (window.OUT && (e.signature || e.cachet)) { if (y > 245) { doc.addPage(); y = 40; } doc.setFont("helvetica", "bold"); doc.setFontSize(9); doc.text(h.t("Pour " + e.nom + ", " + (e.responsable || "")), 120, y); OUT.signerPDF(doc, 118, y + 2, 78, 30, e.signature, e.cachet); }
     h.footers(doc, "Facture " + d.num); X.saveFile(doc.output("blob"), "Facture_" + d.num + "_" + X.slug(p.info.nom) + ".pdf");
   }
